@@ -702,7 +702,7 @@
 const SUPABASE_URL = 'https://fqorzcpfouxevvntmiia.supabase.co';       // e.g. https://xxxx.supabase.co
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZxb3J6Y3Bmb3V4ZXZ2bnRtaWlhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU0MDY4MzYsImV4cCI6MjEwMDk4MjgzNn0.J1BgOj4AWXm7bQoqRxzUo0HrjI05BHRNEBnmn-nAIN8';
 
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // --- window.storage polyfill ---
 // The rest of this file (unchanged from the Claude.ai artifact version) calls
@@ -711,27 +711,27 @@ const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // loadHistory()/saveHistory()/loadFeedbackLog()/etc. function works with zero changes.
 window.storage = {
   async get(key, shared){
-    const { data, error } = await supabase.from('app_storage').select('value').eq('key', key).maybeSingle();
+    const { data, error } = await supabaseClient.from('app_storage').select('value').eq('key', key).maybeSingle();
     if(error) throw error;
     if(!data) throw new Error('not found'); // matches Claude.ai's storage: missing key throws, not null
     return { key, value: data.value, shared: !!shared };
   },
   async set(key, value, shared){
-    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    const { data: userData, error: userErr } = await supabaseClient.auth.getUser();
     if(userErr || !userData.user) throw new Error('Not signed in');
-    const { error } = await supabase.from('app_storage').upsert({
+    const { error } = await supabaseClient.from('app_storage').upsert({
       user_id: userData.user.id, key, value, shared: !!shared, updated_at: new Date().toISOString()
     });
     if(error) throw error;
     return { key, value, shared: !!shared };
   },
   async delete(key, shared){
-    const { error } = await supabase.from('app_storage').delete().eq('key', key);
+    const { error } = await supabaseClient.from('app_storage').delete().eq('key', key);
     if(error) throw error;
     return { key, deleted: true, shared: !!shared };
   },
   async list(prefix, shared){
-    let query = supabase.from('app_storage').select('key');
+    let query = supabaseClient.from('app_storage').select('key');
     if(prefix) query = query.like('key', `${prefix}%`);
     const { data, error } = await query;
     if(error) throw error;
@@ -752,7 +752,7 @@ document.getElementById('authSignInBtn').addEventListener('click', async () => {
   const password = document.getElementById('authPassword').value;
   const errEl = document.getElementById('authError');
   errEl.textContent = '';
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if(error){ errEl.textContent = error.message; return; }
   bootAfterAuth();
 });
@@ -762,7 +762,7 @@ document.getElementById('authPassword').addEventListener('keydown', (e) => {
 });
 
 (async () => {
-  const { data } = await supabase.auth.getSession();
+  const { data } = await supabaseClient.auth.getSession();
   if(data && data.session){
     bootAfterAuth();
   }
@@ -2040,14 +2040,14 @@ For the fragment given, output ONLY a dense bulleted inventory covering, whereve
 
 Do not reproduce code verbatim. Do not add commentary, preambles, or wrap-up text — bullet points only. Do not skip minor elements. If this fragment has no UI or business logic beyond imports/types, output exactly: "No distinct UI/business logic in this fragment beyond type/import declarations."`;
 
-// --- Calls our own serverless proxy (/api/claude) instead of Anthropic directly.
-// The proxy holds the real API key server-side and verifies this Supabase session token
+// --- Calls our Supabase Edge Function instead of Anthropic directly.
+// The function holds the real API key server-side and verifies this Supabase session token
 // before forwarding the request, so the key is never exposed to the browser. ---
 async function callClaudeProxy(body){
-  const { data: sessionData } = await supabase.auth.getSession();
+  const { data: sessionData } = await supabaseClient.auth.getSession();
   const token = sessionData && sessionData.session ? sessionData.session.access_token : null;
   if(!token) throw new Error('Not signed in — please sign in again.');
-  return fetch('/api/claude', {
+  return fetch(`${SUPABASE_URL}/functions/v1/claude`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -2924,7 +2924,7 @@ async function appMain(){
 }
 
 document.getElementById('signOutBtn').addEventListener('click', async () => {
-  await supabase.auth.signOut();
+  await supabaseClient.auth.signOut();
   location.reload();
 });
 </script>
