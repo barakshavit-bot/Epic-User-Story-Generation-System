@@ -2479,8 +2479,9 @@ function openUpdateInJiraModal(raw){
     el.innerHTML = '<div class="hint">Searching for a matching ticket…</div>';
     try{
       const item = state.items[state.selectedItemIndex];
-      const res = await callJiraProxy('searchIssues', { queryText: item.title });
-      if(!res.issues.length){ el.innerHTML = '<div class="hint">No likely match found — try Search manually instead.</div>'; return; }
+      const issueType = item.type === 'epic' ? 'Epic' : 'Story';
+      const res = await callJiraProxy('searchIssues', { queryText: item.title, issueType });
+      if(!res.issues.length){ el.innerHTML = `<div class="hint">No likely ${issueType} match found — try Search manually instead.</div>`; return; }
       el.innerHTML = res.issues.map((it, i) =>
         `<div class="jira-result" data-i="${i}">${escapeHtml(it.key)}${it.issueType ? ` (${escapeHtml(it.issueType)})` : ''} — ${escapeHtml(it.summary)}</div>`
       ).join('');
@@ -2511,8 +2512,9 @@ function openUpdateInJiraModal(raw){
 
     const issueInput = document.getElementById('issueSearchInput');
     if(issueInput){
+      // Manual search deliberately covers every issue type across the whole Jira site —
+      // unlike auto-suggest, it's not scoped to Epic vs Story, so you can find anything.
       wireLiveSearch(issueInput, document.getElementById('issueResults'), async (q) => {
-        if(!q) return [];
         const res = await callJiraProxy('searchIssues', { queryText: q });
         return res.issues.map(it => ({ key: it.key, label: `${it.issueType ? `(${it.issueType}) ` : ''}${it.summary}` }));
       }, (picked) => {
