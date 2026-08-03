@@ -163,6 +163,34 @@
     white-space:nowrap;
   }
   .mock-summary-box button:hover{background:var(--navy-light);color:#fff;}
+  .provider-toggle{
+    display:flex;
+    gap:4px;
+    background:#F0ECFB;
+    padding:4px;
+    border-radius:8px;
+    width:fit-content;
+  }
+  .provider-toggle button{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px;
+    font-weight:600;
+    padding:7px 14px;
+    border-radius:6px;
+    border:none;
+    background:transparent;
+    color:var(--slate);
+    cursor:pointer;
+    transition:background .15s, color .15s;
+  }
+  .provider-toggle button.active{
+    background:var(--yellow);
+    color:var(--navy);
+  }
+  .provider-toggle button:hover:not(.active){
+    background:rgba(255,255,255,0.6);
+    color:var(--navy);
+  }
 
   .feedback-box{
     border:1.5px solid var(--line);
@@ -897,6 +925,7 @@ let flowImages = []; // {data, mediaType, name} — session-only, NOT persisted;
 let uploadedCodeFiles = []; // {path, content, mode: 'raw'|'manifest', originalLength, chunkCount, failedChunks}
 let savedMockMeta = null;
 let historyLoadOk = true; // false = initial load couldn't be verified — refuse to risk an overwrite
+let llmProvider = 'anthropic'; // 'anthropic' | 'gemini' — the app's own toggle, wins over the Supabase secret
 let mockLoadOk = true;
 let feedbackLoadOk = true;
 
@@ -1065,6 +1094,18 @@ function renderGeneratePanel(){
   `;
   panel.appendChild(mockSummary);
 
+  const providerField = document.createElement('div');
+  providerField.className = 'field';
+  providerField.innerHTML = `
+    <label>AI Provider</label>
+    <div class="provider-toggle" id="providerToggle">
+      <button type="button" data-provider="anthropic" class="${llmProvider === 'anthropic' ? 'active' : ''}">Anthropic</button>
+      <button type="button" data-provider="gemini" class="${llmProvider === 'gemini' ? 'active' : ''}">Gemini</button>
+    </div>
+    <div class="hint">Switch any time — takes effect on the next generation, no page reload needed.</div>
+  `;
+  panel.appendChild(providerField);
+
   const chainNoticeWrapper = document.createElement('div');
   chainNoticeWrapper.id = 'chainNoticeWrapper';
   panel.appendChild(chainNoticeWrapper);
@@ -1120,6 +1161,12 @@ function renderGeneratePanel(){
   panel.appendChild(btn);
 
   document.getElementById('manageMockBtn').onclick = () => { currentView = 'mock'; renderApp(); };
+  document.querySelectorAll('#providerToggle button').forEach(btn => {
+    btn.onclick = async () => {
+      await saveLLMProvider(btn.dataset.provider);
+      document.querySelectorAll('#providerToggle button').forEach(b => b.classList.toggle('active', b.dataset.provider === llmProvider));
+    };
+  });
   setupFlowDropzone();
   renderFlowThumbs();
   wireWordUploadWidgets();
@@ -1499,6 +1546,27 @@ function wireFeedbackPage(){
 const HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const MAX_HISTORY_ENTRIES = 100;
 const MAX_HISTORY_BYTES = 4500000;
+
+async function loadLLMProvider(){
+  try{
+    const res = await safeLoadKey('epic-forge-llm-provider');
+    if(res.ok && res.value){
+      llmProvider = res.value === 'gemini' ? 'gemini' : 'anthropic';
+    }
+  }catch(err){
+    // keep default 'anthropic' — this setting is low-stakes enough not to need the full
+    // data-loss guard the mock/feedback/history keys use
+  }
+}
+
+async function saveLLMProvider(value){
+  llmProvider = value === 'gemini' ? 'gemini' : 'anthropic';
+  try{
+    await window.storage.set('epic-forge-llm-provider', llmProvider, false);
+  }catch(err){
+    console.error(err);
+  }
+}
 
 async function loadHistory(){
   const res = await safeLoadKey('epic-forge-history');
@@ -2053,7 +2121,7 @@ async function callClaudeProxy(body){
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${token}`
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify({ ...body, provider: llmProvider })
   });
 }
 
@@ -2918,7 +2986,7 @@ function buildDocFragment(raw){
 }
 
 async function appMain(){
-  await Promise.all([loadSavedMock(), loadFeedbackLog(), loadHistory()]);
+  await Promise.all([loadSavedMock(), loadFeedbackLog(), loadHistory(), loadLLMProvider()]);
   currentView = (uploadedImages.length > 0 || uploadedCodeFiles.length > 0) ? 'generate' : 'mock';
   renderApp();
 }
