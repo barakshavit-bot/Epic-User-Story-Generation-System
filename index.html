@@ -192,6 +192,99 @@
     color:var(--navy);
   }
 
+  .jira-modal-overlay{
+    position:fixed;inset:0;
+    background:rgba(26,17,70,0.55);
+    display:flex;align-items:center;justify-content:center;
+    z-index:1500;
+    padding:20px;
+  }
+  .jira-modal{
+    background:var(--panel);
+    border-radius:14px;
+    width:100%;
+    max-width:520px;
+    max-height:85vh;
+    overflow-y:auto;
+    padding:28px;
+    box-shadow:0 20px 60px rgba(0,0,0,0.3);
+  }
+  .jira-modal h3{
+    font-family:'JetBrains Mono',monospace;
+    font-size:16px;
+    color:var(--navy);
+    margin:0 0 6px;
+  }
+  .jira-modal .jira-modal-sub{
+    font-size:13px;
+    color:var(--slate);
+    margin:0 0 20px;
+    line-height:1.5;
+  }
+  .jira-modal .field{margin-bottom:18px;}
+  .jira-field-label{
+    font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;
+    text-transform:uppercase;letter-spacing:.08em;color:var(--slate);
+    display:block;margin-bottom:6px;
+  }
+  .jira-modal input[type=text]{
+    width:100%;
+    border:1.5px solid var(--line);
+    border-radius:8px;
+    padding:10px 12px;
+    font-size:14px;
+    font-family:'Inter',sans-serif;
+  }
+  .jira-modal input[type=text]:focus{outline:none;border-color:var(--navy-light);}
+  .jira-results{
+    margin-top:8px;
+    max-height:180px;
+    overflow-y:auto;
+    border:1px solid var(--line);
+    border-radius:8px;
+  }
+  .jira-result{
+    padding:9px 12px;
+    font-size:13px;
+    cursor:pointer;
+    border-bottom:1px solid var(--line);
+  }
+  .jira-result:last-child{border-bottom:none;}
+  .jira-result:hover{background:#F3F0FA;}
+  .jira-selected-chip{
+    display:inline-flex;align-items:center;gap:8px;
+    background:#EEF9F0;border:1px solid rgba(63,143,92,0.35);
+    color:var(--given);
+    padding:8px 12px;border-radius:8px;
+    font-size:13.5px;font-weight:600;
+    margin-top:8px;
+  }
+  .jira-selected-chip button{
+    border:none;background:none;color:inherit;cursor:pointer;
+    opacity:0.7;font-size:14px;padding:0;
+  }
+  .jira-item-picker{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px;}
+  .jira-item-picker button{
+    font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600;
+    border:1.5px solid var(--line);background:#fff;color:var(--navy);
+    padding:6px 11px;border-radius:6px;cursor:pointer;
+  }
+  .jira-item-picker button.active{background:var(--yellow);border-color:var(--yellow);color:var(--navy);}
+  .jira-modal-actions{display:flex;gap:8px;margin-top:22px;}
+  .jira-modal-actions button{
+    font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;
+    padding:11px 18px;border-radius:8px;cursor:pointer;border:none;
+  }
+  .jira-modal-actions .primary{background:var(--yellow);color:var(--navy);}
+  .jira-modal-actions .primary:disabled{background:var(--line);color:var(--slate);cursor:not-allowed;}
+  .jira-modal-actions .secondary{background:#fff;border:1.5px solid var(--line);color:var(--navy);}
+  .jira-mode-toggle{display:flex;gap:4px;background:#F0ECFB;padding:4px;border-radius:8px;width:fit-content;margin-bottom:16px;}
+  .jira-mode-toggle button{
+    font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600;
+    padding:7px 13px;border-radius:6px;border:none;background:transparent;color:var(--slate);cursor:pointer;
+  }
+  .jira-mode-toggle button.active{background:var(--yellow);color:var(--navy);}
+
   .feedback-box{
     border:1.5px solid var(--line);
     border-radius:10px;
@@ -1663,6 +1756,49 @@ function extractHistoryTitle(raw){
   return '(untitled)';
 }
 
+// Splits any generated output into the actual pushable Jira item(s). A plain Epic (no "## "
+// headings at all) becomes one Epic item. Generate Stories / Design Update output can contain
+// several "## Story N: Title" sections — each becomes its own Story item. A "## Design Change
+// Summary" section is always excluded — it's commentary for you, not content for Jira.
+function parseOutputIntoJiraItems(raw){
+  const lines = (raw || '').split('\n');
+  const headingPositions = [];
+  lines.forEach((line, i) => {
+    const m = line.trim().match(/^##\s+(.*)$/);
+    if(m) headingPositions.push({ index: i, title: m[1].replace(/\*\*/g, '').trim() });
+  });
+
+  if(headingPositions.length === 0){
+    return [{ type: 'epic', title: extractHistoryTitle(raw), markdown: raw.trim() }];
+  }
+
+  const items = [];
+
+  const preambleEnd = headingPositions[0].index;
+  const preambleText = lines.slice(0, preambleEnd).join('\n').trim();
+  if(preambleText){
+    items.push({ type: 'epic', title: extractHistoryTitle(preambleText), markdown: preambleText });
+  }
+
+  for(let h = 0; h < headingPositions.length; h++){
+    const start = headingPositions[h].index;
+    const end = h + 1 < headingPositions.length ? headingPositions[h + 1].index : lines.length;
+    const sectionTitle = headingPositions[h].title;
+    if(/^design change summary$/i.test(sectionTitle)) continue; // commentary, not pushable content
+
+    const sectionText = lines.slice(start, end).join('\n').trim();
+    const sectionBodyOnly = lines.slice(start + 1, end).join('\n').trim(); // without this section's own "## " line
+    const isStory = /^story/i.test(sectionTitle);
+    items.push({
+      type: isStory ? 'story' : 'epic',
+      title: isStory ? (sectionTitle.replace(/^story\s*\d*:?\s*/i, '').trim() || sectionTitle) : extractHistoryTitle(sectionBodyOnly),
+      markdown: sectionText,
+    });
+  }
+
+  return items.length ? items : [{ type: 'epic', title: extractHistoryTitle(raw), markdown: raw.trim() }];
+}
+
 function daysRemaining(entry){
   if(entry.archived) return null;
   const msLeft = entry.timestamp + HISTORY_RETENTION_MS - Date.now();
@@ -1713,6 +1849,8 @@ function historyPageTemplate(){
         <button class="history-copy-btn" data-id="${entry.id}">Copy</button>
         <button class="history-word-btn" data-id="${entry.id}">Copy for Word</button>
         <button class="history-jira-btn" data-id="${entry.id}">Copy for Jira</button>
+        <button class="history-create-jira-btn" data-id="${entry.id}" style="border-color:var(--yellow);color:#8A5E06;">Create in Jira</button>
+        <button class="history-update-jira-btn" data-id="${entry.id}" style="border-color:var(--yellow);color:#8A5E06;">Update in Jira</button>
         <button class="history-archive-btn" data-id="${entry.id}">${entry.archived ? 'Unarchive' : 'Archive'}</button>
         <button class="history-delete-btn" data-id="${entry.id}">Delete</button>
       </div>
@@ -2020,6 +2158,18 @@ function wireHistoryPage(){
       if(entry) copyRichText(entry.output, btn);
     };
   });
+  document.querySelectorAll('.history-create-jira-btn').forEach(btn => {
+    btn.onclick = () => {
+      const entry = historyLog.find(e => e.id === btn.dataset.id);
+      if(entry) openCreateInJiraModal(entry.output);
+    };
+  });
+  document.querySelectorAll('.history-update-jira-btn').forEach(btn => {
+    btn.onclick = () => {
+      const entry = historyLog.find(e => e.id === btn.dataset.id);
+      if(entry) openUpdateInJiraModal(entry.output);
+    };
+  });
   document.querySelectorAll('.history-archive-btn').forEach(btn => {
     btn.onclick = () => toggleArchiveEntry(btn.dataset.id);
   });
@@ -2123,6 +2273,278 @@ async function callClaudeProxy(body){
     },
     body: JSON.stringify({ ...body, provider: llmProvider })
   });
+}
+
+// --- Jira integration: search/create/update via the "jira" Edge Function ---
+
+async function callJiraProxy(action, params){
+  const { data: sessionData } = await supabaseClient.auth.getSession();
+  const token = sessionData && sessionData.session ? sessionData.session.access_token : null;
+  if(!token) throw new Error('Not signed in — please sign in again.');
+  const resp = await fetch(`${SUPABASE_URL}/functions/v1/jira`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ action, ...params }),
+  });
+  let data;
+  try{ data = await resp.json(); }catch(e){ data = {}; }
+  if(!resp.ok || data.error){
+    const msg = data.error && data.error.message ? data.error.message
+      : typeof data.error === 'string' ? data.error
+      : `Jira request failed (${resp.status}).`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function openJiraModal(innerHtml){
+  closeJiraModal();
+  const overlay = document.createElement('div');
+  overlay.id = 'jiraModalOverlay';
+  overlay.className = 'jira-modal-overlay';
+  overlay.innerHTML = `<div class="jira-modal">${innerHtml}</div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => { if(e.target === overlay) closeJiraModal(); });
+  return overlay;
+}
+
+function closeJiraModal(){
+  const overlay = document.getElementById('jiraModalOverlay');
+  if(overlay) overlay.remove();
+}
+
+// Wires a text input to a debounced search, rendering results into a container and calling
+// onSelect(item) when one is clicked. `searchFn(query)` must return an array of {key, label}.
+function wireLiveSearch(inputEl, resultsEl, searchFn, onSelect){
+  let debounceTimer = null;
+  const runSearch = async () => {
+    const q = inputEl.value.trim();
+    resultsEl.innerHTML = '<div class="hint">Searching…</div>';
+    try{
+      const items = await searchFn(q);
+      if(!items.length){ resultsEl.innerHTML = '<div class="hint">No matches.</div>'; return; }
+      resultsEl.innerHTML = items.map((it, i) => `<div class="jira-result" data-i="${i}">${escapeHtml(it.key)} — ${escapeHtml(it.label)}</div>`).join('');
+      resultsEl.querySelectorAll('.jira-result').forEach(el => {
+        el.onclick = () => onSelect(items[Number(el.dataset.i)]);
+      });
+    }catch(err){
+      resultsEl.innerHTML = `<div class="hint" style="color:var(--danger);">${escapeHtml(err.message)}</div>`;
+    }
+  };
+  inputEl.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(runSearch, 350);
+  });
+  runSearch(); // show initial results (e.g. full project list) as soon as the field opens
+}
+
+function jiraItemPickerHtml(items, selectedIndex){
+  return `<div class="jira-item-picker">${items.map((it, i) =>
+    `<button data-i="${i}" class="${i === selectedIndex ? 'active' : ''}">${escapeHtml(it.title.length > 28 ? it.title.slice(0, 28) + '…' : it.title)}</button>`
+  ).join('')}</div>`;
+}
+
+function openCreateInJiraModal(raw){
+  const items = parseOutputIntoJiraItems(raw);
+  const state = { items, selectedItemIndex: 0, selectedProject: null, selectedEpic: null };
+
+  function render(){
+    const item = state.items[state.selectedItemIndex];
+    const needsEpic = item.type === 'story';
+    openJiraModal(`
+      <h3>Create in Jira</h3>
+      <p class="jira-modal-sub">${state.items.length > 1 ? `Choose which item to create, then a project${needsEpic ? ' and epic' : ''}.` : `Creating: <b>${escapeHtml(item.title)}</b>`}</p>
+      ${state.items.length > 1 ? jiraItemPickerHtml(state.items, state.selectedItemIndex) : ''}
+      <div class="field">
+        <label class="jira-field-label">Project</label>
+        ${state.selectedProject
+          ? `<div class="jira-selected-chip">${escapeHtml(state.selectedProject.key)} — ${escapeHtml(state.selectedProject.name)}<button id="clearProjectBtn">&times;</button></div>`
+          : `<input type="text" id="projectSearchInput" placeholder="Search projects…"><div class="jira-results" id="projectResults"></div>`}
+      </div>
+      ${needsEpic ? `
+      <div class="field">
+        <label class="jira-field-label">Epic (optional)</label>
+        ${state.selectedEpic
+          ? `<div class="jira-selected-chip">${escapeHtml(state.selectedEpic.key)} — ${escapeHtml(state.selectedEpic.summary)}<button id="clearEpicBtn">&times;</button></div>`
+          : state.selectedProject
+            ? `<input type="text" id="epicSearchInput" placeholder="Search epics in ${escapeHtml(state.selectedProject.key)}…"><div class="jira-results" id="epicResults"></div>`
+            : `<div class="hint">Select a project first.</div>`}
+      </div>` : ''}
+      <div id="createStatus"></div>
+      <div class="jira-modal-actions">
+        <button class="primary" id="confirmCreateBtn" ${!state.selectedProject ? 'disabled' : ''}>Create Issue</button>
+        <button class="secondary" id="cancelCreateBtn">Cancel</button>
+      </div>
+    `);
+    wire();
+  }
+
+  function wire(){
+    document.querySelectorAll('.jira-item-picker button').forEach(btn => {
+      btn.onclick = () => { state.selectedItemIndex = Number(btn.dataset.i); state.selectedEpic = null; render(); };
+    });
+    document.getElementById('cancelCreateBtn').onclick = closeJiraModal;
+
+    const projectInput = document.getElementById('projectSearchInput');
+    if(projectInput){
+      wireLiveSearch(projectInput, document.getElementById('projectResults'), async (q) => {
+        const res = await callJiraProxy('searchProjects', { query: q });
+        return res.projects.map(p => ({ key: p.key, label: p.name }));
+      }, (picked) => {
+        state.selectedProject = { key: picked.key, name: picked.label };
+        state.selectedEpic = null;
+        render();
+      });
+    }
+    const clearProjectBtn = document.getElementById('clearProjectBtn');
+    if(clearProjectBtn) clearProjectBtn.onclick = () => { state.selectedProject = null; state.selectedEpic = null; render(); };
+
+    const epicInput = document.getElementById('epicSearchInput');
+    if(epicInput){
+      wireLiveSearch(epicInput, document.getElementById('epicResults'), async (q) => {
+        const res = await callJiraProxy('searchEpics', { projectKey: state.selectedProject.key });
+        const list = res.epics.map(e => ({ key: e.key, label: e.summary }));
+        if(!q) return list;
+        const lower = q.toLowerCase();
+        return list.filter(e => e.key.toLowerCase().includes(lower) || e.label.toLowerCase().includes(lower));
+      }, (picked) => {
+        state.selectedEpic = { key: picked.key, summary: picked.label };
+        render();
+      });
+    }
+    const clearEpicBtn = document.getElementById('clearEpicBtn');
+    if(clearEpicBtn) clearEpicBtn.onclick = () => { state.selectedEpic = null; render(); };
+
+    document.getElementById('confirmCreateBtn').onclick = async () => {
+      const btn = document.getElementById('confirmCreateBtn');
+      const statusEl = document.getElementById('createStatus');
+      btn.disabled = true;
+      statusEl.innerHTML = statusBanner('warn', 'progress', 'Creating…', '');
+      try{
+        const item = state.items[state.selectedItemIndex];
+        const result = await callJiraProxy('createIssue', {
+          projectKey: state.selectedProject.key,
+          issueType: item.type === 'epic' ? 'Epic' : 'Story',
+          summary: item.title,
+          descriptionMarkdown: item.markdown,
+          epicKey: state.selectedEpic ? state.selectedEpic.key : undefined,
+        });
+        statusEl.innerHTML = statusBanner('ok', '✓', `Created ${result.key}`, `<a href="${result.url}" target="_blank" rel="noopener">Open in Jira ↗</a>`);
+        btn.textContent = 'Done';
+        btn.disabled = false;
+        btn.onclick = closeJiraModal;
+      }catch(err){
+        statusEl.innerHTML = statusBanner('err', '⚠', 'Could not create issue', escapeHtml(err.message));
+        btn.disabled = false;
+      }
+    };
+  }
+
+  render();
+}
+
+function openUpdateInJiraModal(raw){
+  const items = parseOutputIntoJiraItems(raw);
+  const state = { items, selectedItemIndex: 0, searchMode: 'auto', selectedIssue: null };
+
+  function render(){
+    const item = state.items[state.selectedItemIndex];
+    openJiraModal(`
+      <h3>Update in Jira</h3>
+      <p class="jira-modal-sub">${state.items.length > 1 ? 'Choose which item to push.' : `Updating with: <b>${escapeHtml(item.title)}</b>`}</p>
+      ${state.items.length > 1 ? jiraItemPickerHtml(state.items, state.selectedItemIndex) : ''}
+      <div class="jira-mode-toggle" id="updateModeToggle">
+        <button data-mode="auto" class="${state.searchMode === 'auto' ? 'active' : ''}">Auto-suggest</button>
+        <button data-mode="manual" class="${state.searchMode === 'manual' ? 'active' : ''}">Search manually</button>
+      </div>
+      <div class="field">
+        ${state.selectedIssue
+          ? `<div class="jira-selected-chip">${escapeHtml(state.selectedIssue.key)} — ${escapeHtml(state.selectedIssue.label)}<button id="clearIssueBtn">&times;</button></div>`
+          : state.searchMode === 'auto'
+            ? `<div id="autoSuggestResults" class="jira-results"></div>`
+            : `<input type="text" id="issueSearchInput" placeholder="Search issues by summary…"><div class="jira-results" id="issueResults"></div>`}
+      </div>
+      <div id="updateStatus"></div>
+      <div class="jira-modal-actions">
+        <button class="primary" id="confirmUpdateBtn" ${!state.selectedIssue ? 'disabled' : ''}>Update Issue</button>
+        <button class="secondary" id="cancelUpdateBtn">Cancel</button>
+      </div>
+    `);
+    wire();
+  }
+
+  async function loadAutoSuggestions(){
+    const el = document.getElementById('autoSuggestResults');
+    if(!el) return;
+    el.innerHTML = '<div class="hint">Searching for a matching ticket…</div>';
+    try{
+      const item = state.items[state.selectedItemIndex];
+      const res = await callJiraProxy('searchIssues', { queryText: item.title });
+      if(!res.issues.length){ el.innerHTML = '<div class="hint">No likely match found — try Search manually instead.</div>'; return; }
+      el.innerHTML = res.issues.map((it, i) =>
+        `<div class="jira-result" data-i="${i}">${escapeHtml(it.key)}${it.issueType ? ` (${escapeHtml(it.issueType)})` : ''} — ${escapeHtml(it.summary)}</div>`
+      ).join('');
+      el.querySelectorAll('.jira-result').forEach(node => {
+        node.onclick = () => {
+          const picked = res.issues[Number(node.dataset.i)];
+          state.selectedIssue = { key: picked.key, label: picked.summary };
+          render();
+        };
+      });
+    }catch(err){
+      el.innerHTML = `<div class="hint" style="color:var(--danger);">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function wire(){
+    document.querySelectorAll('.jira-item-picker button').forEach(btn => {
+      btn.onclick = () => { state.selectedItemIndex = Number(btn.dataset.i); state.selectedIssue = null; render(); };
+    });
+    document.getElementById('cancelUpdateBtn').onclick = closeJiraModal;
+    document.querySelectorAll('#updateModeToggle button').forEach(btn => {
+      btn.onclick = () => { state.searchMode = btn.dataset.mode; state.selectedIssue = null; render(); };
+    });
+    const clearIssueBtn = document.getElementById('clearIssueBtn');
+    if(clearIssueBtn) clearIssueBtn.onclick = () => { state.selectedIssue = null; render(); };
+
+    if(state.searchMode === 'auto' && !state.selectedIssue) loadAutoSuggestions();
+
+    const issueInput = document.getElementById('issueSearchInput');
+    if(issueInput){
+      wireLiveSearch(issueInput, document.getElementById('issueResults'), async (q) => {
+        if(!q) return [];
+        const res = await callJiraProxy('searchIssues', { queryText: q });
+        return res.issues.map(it => ({ key: it.key, label: `${it.issueType ? `(${it.issueType}) ` : ''}${it.summary}` }));
+      }, (picked) => {
+        state.selectedIssue = { key: picked.key, label: picked.label };
+        render();
+      });
+    }
+
+    document.getElementById('confirmUpdateBtn').onclick = async () => {
+      const btn = document.getElementById('confirmUpdateBtn');
+      const statusEl = document.getElementById('updateStatus');
+      btn.disabled = true;
+      statusEl.innerHTML = statusBanner('warn', 'progress', 'Updating…', '');
+      try{
+        const item = state.items[state.selectedItemIndex];
+        const result = await callJiraProxy('updateIssue', {
+          issueKey: state.selectedIssue.key,
+          summary: item.title,
+          descriptionMarkdown: item.markdown,
+        });
+        statusEl.innerHTML = statusBanner('ok', '✓', `Updated ${result.key}`, `<a href="${result.url}" target="_blank" rel="noopener">Open in Jira ↗</a>`);
+        btn.textContent = 'Done';
+        btn.disabled = false;
+        btn.onclick = closeJiraModal;
+      }catch(err){
+        statusEl.innerHTML = statusBanner('err', '⚠', 'Could not update issue', escapeHtml(err.message));
+        btn.disabled = false;
+      }
+    };
+  }
+
+  render();
 }
 
 async function summarizeChunk(filePath, idx, total, chunkStr, attempt){
@@ -2757,6 +3179,8 @@ function renderOutput(raw, truncated){
     <button id="copyBtn">Copy as text</button>
     <button id="copyJiraBtn">Copy for Jira</button>
     <button id="copyWordBtn">Copy for Word</button>
+    <button id="createInJiraBtn" style="background:var(--yellow);border-color:var(--yellow);color:var(--navy);">Create in Jira</button>
+    <button id="updateInJiraBtn" style="background:var(--yellow);border-color:var(--yellow);color:var(--navy);">Update in Jira</button>
   `;
   outputPanel.appendChild(toolbar);
 
@@ -2774,6 +3198,8 @@ function renderOutput(raw, truncated){
   document.getElementById('copyWordBtn').onclick = (e) => {
     copyWithFallback(plainFallback(lastOutput), `<div>${rawToWordHtml(lastOutput)}</div>`, e.currentTarget);
   };
+  document.getElementById('createInJiraBtn').onclick = () => openCreateInJiraModal(lastOutput);
+  document.getElementById('updateInJiraBtn').onclick = () => openUpdateInJiraModal(lastOutput);
 
   currentRating = null;
   const feedbackBox = document.createElement('div');
