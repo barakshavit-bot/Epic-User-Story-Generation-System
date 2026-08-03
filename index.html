@@ -284,6 +284,16 @@
     padding:7px 13px;border-radius:6px;border:none;background:transparent;color:var(--slate);cursor:pointer;
   }
   .jira-mode-toggle button.active{background:var(--yellow);color:var(--navy);}
+  .jira-confirm-summary{
+    background:#F3F0FA;
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:14px 16px;
+    font-size:13.5px;
+    line-height:1.7;
+  }
+  .jira-confirm-summary > div{margin-bottom:4px;}
+  .jira-confirm-summary > div:last-child{margin-bottom:0;}
 
   .feedback-box{
     border:1.5px solid var(--line);
@@ -2346,9 +2356,10 @@ function jiraItemPickerHtml(items, selectedIndex){
 
 function openCreateInJiraModal(raw){
   const items = parseOutputIntoJiraItems(raw);
-  const state = { items, selectedItemIndex: 0, selectedProject: null, selectedEpic: null };
+  const state = { items, selectedItemIndex: 0, selectedProject: null, selectedEpic: null, confirming: false };
 
   function render(){
+    if(state.confirming){ renderConfirm(); return; }
     const item = state.items[state.selectedItemIndex];
     const needsEpic = item.type === 'story';
     openJiraModal(`
@@ -2370,13 +2381,65 @@ function openCreateInJiraModal(raw){
             ? `<input type="text" id="epicSearchInput" placeholder="Search epics in ${escapeHtml(state.selectedProject.key)}…"><div class="jira-results" id="epicResults"></div>`
             : `<div class="hint">Select a project first.</div>`}
       </div>` : ''}
-      <div id="createStatus"></div>
       <div class="jira-modal-actions">
-        <button class="primary" id="confirmCreateBtn" ${!state.selectedProject ? 'disabled' : ''}>Create Issue</button>
+        <button class="primary" id="confirmCreateBtn" ${!state.selectedProject ? 'disabled' : ''}>Review &amp; Create</button>
         <button class="secondary" id="cancelCreateBtn">Cancel</button>
       </div>
     `);
     wire();
+  }
+
+  function renderConfirm(){
+    const item = state.items[state.selectedItemIndex];
+    const isEpic = item.type === 'epic';
+    openJiraModal(`
+      <h3>Confirm: Create in Jira</h3>
+      <p class="jira-modal-sub">Nothing happens in Jira until you confirm below.</p>
+      <div class="jira-confirm-summary">
+        <div><b>Action:</b> Create a new <b>${isEpic ? 'Epic' : 'Story'}</b></div>
+        <div><b>Project:</b> ${escapeHtml(state.selectedProject.key)} — ${escapeHtml(state.selectedProject.name)}</div>
+        ${!isEpic && state.selectedEpic ? `<div><b>Linked under Epic:</b> ${escapeHtml(state.selectedEpic.key)} — ${escapeHtml(state.selectedEpic.summary)}</div>` : ''}
+        ${!isEpic && !state.selectedEpic ? `<div><b>Linked under Epic:</b> none</div>` : ''}
+        <div><b>Title:</b> ${escapeHtml(item.title)}</div>
+        <div class="hint" style="margin-top:10px;">Acceptance Criteria and Edge Cases go into a dedicated "Acceptance Criteria" field if this Jira site has one — everything else (Statement, Business Requirements, Technical Notes, etc.) goes into the Description. If that field doesn't exist or won't accept it, everything falls back into the Description automatically.</div>
+      </div>
+      <div id="createStatus"></div>
+      <div class="jira-modal-actions">
+        <button class="primary" id="confirmCreateFinalBtn">Yes, create it</button>
+        <button class="secondary" id="backCreateBtn">Go back</button>
+      </div>
+    `);
+    document.getElementById('backCreateBtn').onclick = () => { state.confirming = false; render(); };
+    document.getElementById('confirmCreateFinalBtn').onclick = doCreate;
+  }
+
+  async function doCreate(){
+    const btn = document.getElementById('confirmCreateFinalBtn');
+    const statusEl = document.getElementById('createStatus');
+    btn.disabled = true;
+    document.getElementById('backCreateBtn').style.display = 'none';
+    statusEl.innerHTML = statusBanner('warn', 'progress', 'Creating…', '');
+    try{
+      const item = state.items[state.selectedItemIndex];
+      const result = await callJiraProxy('createIssue', {
+        projectKey: state.selectedProject.key,
+        issueType: item.type === 'epic' ? 'Epic' : 'Story',
+        summary: item.title,
+        descriptionMarkdown: item.markdown,
+        epicKey: state.selectedEpic ? state.selectedEpic.key : undefined,
+      });
+      statusEl.innerHTML = statusBanner(result.warning ? 'warn' : 'ok', result.warning ? '⚠' : '✓', `Created ${result.key}`,
+        `<a href="${result.url}" target="_blank" rel="noopener">Open in Jira ↗</a>${result.warning ? `<br>${escapeHtml(result.warning)}` : ''}`);
+      btn.textContent = 'Done';
+      btn.disabled = false;
+      btn.onclick = closeJiraModal;
+    }catch(err){
+      statusEl.innerHTML = statusBanner('err', '⚠', 'Could not create issue', escapeHtml(err.message));
+      btn.disabled = false;
+      btn.textContent = 'Yes, create it';
+      btn.onclick = doCreate;
+      document.getElementById('backCreateBtn').style.display = '';
+    }
   }
 
   function wire(){
@@ -2415,29 +2478,7 @@ function openCreateInJiraModal(raw){
     const clearEpicBtn = document.getElementById('clearEpicBtn');
     if(clearEpicBtn) clearEpicBtn.onclick = () => { state.selectedEpic = null; render(); };
 
-    document.getElementById('confirmCreateBtn').onclick = async () => {
-      const btn = document.getElementById('confirmCreateBtn');
-      const statusEl = document.getElementById('createStatus');
-      btn.disabled = true;
-      statusEl.innerHTML = statusBanner('warn', 'progress', 'Creating…', '');
-      try{
-        const item = state.items[state.selectedItemIndex];
-        const result = await callJiraProxy('createIssue', {
-          projectKey: state.selectedProject.key,
-          issueType: item.type === 'epic' ? 'Epic' : 'Story',
-          summary: item.title,
-          descriptionMarkdown: item.markdown,
-          epicKey: state.selectedEpic ? state.selectedEpic.key : undefined,
-        });
-        statusEl.innerHTML = statusBanner('ok', '✓', `Created ${result.key}`, `<a href="${result.url}" target="_blank" rel="noopener">Open in Jira ↗</a>`);
-        btn.textContent = 'Done';
-        btn.disabled = false;
-        btn.onclick = closeJiraModal;
-      }catch(err){
-        statusEl.innerHTML = statusBanner('err', '⚠', 'Could not create issue', escapeHtml(err.message));
-        btn.disabled = false;
-      }
-    };
+    document.getElementById('confirmCreateBtn').onclick = () => { state.confirming = true; render(); };
   }
 
   render();
@@ -2445,9 +2486,10 @@ function openCreateInJiraModal(raw){
 
 function openUpdateInJiraModal(raw){
   const items = parseOutputIntoJiraItems(raw);
-  const state = { items, selectedItemIndex: 0, searchMode: 'auto', selectedIssue: null };
+  const state = { items, selectedItemIndex: 0, searchMode: 'auto', selectedIssue: null, confirming: false };
 
   function render(){
+    if(state.confirming){ renderConfirm(); return; }
     const item = state.items[state.selectedItemIndex];
     openJiraModal(`
       <h3>Update in Jira</h3>
@@ -2464,13 +2506,61 @@ function openUpdateInJiraModal(raw){
             ? `<div id="autoSuggestResults" class="jira-results"></div>`
             : `<input type="text" id="issueSearchInput" placeholder="Search issues by summary…"><div class="jira-results" id="issueResults"></div>`}
       </div>
-      <div id="updateStatus"></div>
       <div class="jira-modal-actions">
-        <button class="primary" id="confirmUpdateBtn" ${!state.selectedIssue ? 'disabled' : ''}>Update Issue</button>
+        <button class="primary" id="confirmUpdateBtn" ${!state.selectedIssue ? 'disabled' : ''}>Review &amp; Update</button>
         <button class="secondary" id="cancelUpdateBtn">Cancel</button>
       </div>
     `);
     wire();
+  }
+
+  function renderConfirm(){
+    const item = state.items[state.selectedItemIndex];
+    openJiraModal(`
+      <h3>Confirm: Update in Jira</h3>
+      <p class="jira-modal-sub">Nothing happens in Jira until you confirm below.</p>
+      <div class="jira-confirm-summary">
+        <div><b>Action:</b> Update existing issue</div>
+        <div><b>Issue:</b> ${escapeHtml(state.selectedIssue.key)} — currently "${escapeHtml(state.selectedIssue.label)}"</div>
+        <div><b>New summary:</b> ${escapeHtml(item.title)}</div>
+        <div class="hint" style="margin-top:6px;">This replaces that issue's Summary and Description (and Acceptance Criteria field, if present) — the previous content will be overwritten.</div>
+        <div class="hint" style="margin-top:10px;">Acceptance Criteria and Edge Cases go into a dedicated "Acceptance Criteria" field if this Jira site has one — everything else goes into the Description. If that field doesn't exist or won't accept it, everything falls back into the Description automatically.</div>
+      </div>
+      <div id="updateStatus"></div>
+      <div class="jira-modal-actions">
+        <button class="primary" id="confirmUpdateFinalBtn">Yes, update it</button>
+        <button class="secondary" id="backUpdateBtn">Go back</button>
+      </div>
+    `);
+    document.getElementById('backUpdateBtn').onclick = () => { state.confirming = false; render(); };
+    document.getElementById('confirmUpdateFinalBtn').onclick = doUpdate;
+  }
+
+  async function doUpdate(){
+    const btn = document.getElementById('confirmUpdateFinalBtn');
+    const statusEl = document.getElementById('updateStatus');
+    btn.disabled = true;
+    document.getElementById('backUpdateBtn').style.display = 'none';
+    statusEl.innerHTML = statusBanner('warn', 'progress', 'Updating…', '');
+    try{
+      const item = state.items[state.selectedItemIndex];
+      const result = await callJiraProxy('updateIssue', {
+        issueKey: state.selectedIssue.key,
+        summary: item.title,
+        descriptionMarkdown: item.markdown,
+      });
+      statusEl.innerHTML = statusBanner(result.warning ? 'warn' : 'ok', result.warning ? '⚠' : '✓', `Updated ${result.key}`,
+        `<a href="${result.url}" target="_blank" rel="noopener">Open in Jira ↗</a>${result.warning ? `<br>${escapeHtml(result.warning)}` : ''}`);
+      btn.textContent = 'Done';
+      btn.disabled = false;
+      btn.onclick = closeJiraModal;
+    }catch(err){
+      statusEl.innerHTML = statusBanner('err', '⚠', 'Could not update issue', escapeHtml(err.message));
+      btn.disabled = false;
+      btn.textContent = 'Yes, update it';
+      btn.onclick = doUpdate;
+      document.getElementById('backUpdateBtn').style.display = '';
+    }
   }
 
   async function loadAutoSuggestions(){
@@ -2523,27 +2613,7 @@ function openUpdateInJiraModal(raw){
       });
     }
 
-    document.getElementById('confirmUpdateBtn').onclick = async () => {
-      const btn = document.getElementById('confirmUpdateBtn');
-      const statusEl = document.getElementById('updateStatus');
-      btn.disabled = true;
-      statusEl.innerHTML = statusBanner('warn', 'progress', 'Updating…', '');
-      try{
-        const item = state.items[state.selectedItemIndex];
-        const result = await callJiraProxy('updateIssue', {
-          issueKey: state.selectedIssue.key,
-          summary: item.title,
-          descriptionMarkdown: item.markdown,
-        });
-        statusEl.innerHTML = statusBanner('ok', '✓', `Updated ${result.key}`, `<a href="${result.url}" target="_blank" rel="noopener">Open in Jira ↗</a>`);
-        btn.textContent = 'Done';
-        btn.disabled = false;
-        btn.onclick = closeJiraModal;
-      }catch(err){
-        statusEl.innerHTML = statusBanner('err', '⚠', 'Could not update issue', escapeHtml(err.message));
-        btn.disabled = false;
-      }
-    };
+    document.getElementById('confirmUpdateBtn').onclick = () => { state.confirming = true; render(); };
   }
 
   render();
