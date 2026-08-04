@@ -1778,35 +1778,71 @@ function parseOutputIntoJiraItems(raw){
     if(m) headingPositions.push({ index: i, title: m[1].replace(/\*\*/g, '').trim() });
   });
 
+  let items;
   if(headingPositions.length === 0){
-    return [{ type: 'epic', title: extractHistoryTitle(raw), markdown: raw.trim() }];
+    items = [{ type: 'epic', title: extractHistoryTitle(raw), markdown: raw.trim() }];
+  } else {
+    items = [];
+    const preambleEnd = headingPositions[0].index;
+    const preambleText = lines.slice(0, preambleEnd).join('\n').trim();
+    if(preambleText){
+      items.push({ type: 'epic', title: extractHistoryTitle(preambleText), markdown: preambleText });
+    }
+
+    for(let h = 0; h < headingPositions.length; h++){
+      const start = headingPositions[h].index;
+      const end = h + 1 < headingPositions.length ? headingPositions[h + 1].index : lines.length;
+      const sectionTitle = headingPositions[h].title;
+      if(/^design change summary$/i.test(sectionTitle)) continue; // commentary, not pushable content
+
+      const sectionText = lines.slice(start, end).join('\n').trim();
+      const sectionBodyOnly = lines.slice(start + 1, end).join('\n').trim(); // without this section's own "## " line
+      const isStory = /^story/i.test(sectionTitle);
+      items.push({
+        type: isStory ? 'story' : 'epic',
+        title: isStory ? (sectionTitle.replace(/^story\s*\d*:?\s*/i, '').trim() || sectionTitle) : extractHistoryTitle(sectionBodyOnly),
+        markdown: sectionText,
+      });
+    }
+    if(!items.length) items = [{ type: 'epic', title: extractHistoryTitle(raw), markdown: raw.trim() }];
   }
 
-  const items = [];
+  return items.map(prepareItemForJira);
+}
 
-  const preambleEnd = headingPositions[0].index;
-  const preambleText = lines.slice(0, preambleEnd).join('\n').trim();
-  if(preambleText){
-    items.push({ type: 'epic', title: extractHistoryTitle(preambleText), markdown: preambleText });
+// Derives a short, punchy name from a full Statement sentence, e.g.
+// "As an Underwriter, I wish to connect a new data source so that submissions are enriched."
+// -> "Connect a new data source"
+function deriveShortEpicTitle(statementSentence){
+  let s = (statementSentence || '').trim();
+  s = s.replace(/^as an?\s+[^,]+,\s*i\s+wish\s+to\s+/i, '');
+  s = s.replace(/\s+so\s+that\s+.*$/i, '');
+  s = s.replace(/\.+$/, '');
+  if(!s) return (statementSentence || '').trim();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// Jira-specific content cleanup, applied once per item right before it's ever pushed:
+// - Epics get a short "4MGAs: <name>" title derived from the Statement, and the Statement
+//   heading + its bold emphasis are dropped (redundant once this becomes the issue itself).
+// - The Acceptance Criteria heading is dropped for both types — its content is going into
+//   Jira's own "Acceptance Criteria" field/section, which is already labeled.
+function prepareItemForJira(item){
+  let markdown = item.markdown;
+  let title = item.title;
+
+  if(item.type === 'epic'){
+    const statementMatch = markdown.match(/^###\s+Statement\s*\n+([^\n]+)/i);
+    if(statementMatch){
+      const statementSentence = statementMatch[1].replace(/\*\*/g, '').trim();
+      title = '4MGAs: ' + deriveShortEpicTitle(statementSentence);
+      markdown = markdown.replace(/^###\s+Statement\s*\n+([^\n]+)/i, () => statementSentence);
+    }
   }
 
-  for(let h = 0; h < headingPositions.length; h++){
-    const start = headingPositions[h].index;
-    const end = h + 1 < headingPositions.length ? headingPositions[h + 1].index : lines.length;
-    const sectionTitle = headingPositions[h].title;
-    if(/^design change summary$/i.test(sectionTitle)) continue; // commentary, not pushable content
+  markdown = markdown.replace(/^###\s+Acceptance Criteria\s*$\n?/im, '').replace(/\n{3,}/g, '\n\n').trim();
 
-    const sectionText = lines.slice(start, end).join('\n').trim();
-    const sectionBodyOnly = lines.slice(start + 1, end).join('\n').trim(); // without this section's own "## " line
-    const isStory = /^story/i.test(sectionTitle);
-    items.push({
-      type: isStory ? 'story' : 'epic',
-      title: isStory ? (sectionTitle.replace(/^story\s*\d*:?\s*/i, '').trim() || sectionTitle) : extractHistoryTitle(sectionBodyOnly),
-      markdown: sectionText,
-    });
-  }
-
-  return items.length ? items : [{ type: 'epic', title: extractHistoryTitle(raw), markdown: raw.trim() }];
+  return { ...item, title, markdown };
 }
 
 function daysRemaining(entry){
