@@ -328,6 +328,20 @@
   }
   .jira-import-detail{margin-top:12px;padding-top:12px;border-top:1px solid var(--line);}
   .jira-import-detail .doc{font-size:13.5px;}
+  .jira-import-regenerate{
+    margin-top:10px;padding-top:10px;border-top:1px dashed var(--line);
+    display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  }
+  .jira-import-regen-input{
+    flex:1;min-width:220px;border:1.5px solid var(--line);border-radius:7px;
+    padding:7px 10px;font-size:12.5px;font-family:'Inter',sans-serif;
+  }
+  .jira-import-regen-btn{
+    font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;
+    border:1.5px solid var(--yellow);background:#fff;color:#8A5E06;
+    padding:6px 11px;border-radius:6px;cursor:pointer;flex-shrink:0;
+  }
+  .jira-import-regen-btn:disabled{opacity:0.5;cursor:not-allowed;}
 
   .feedback-box{
     border:1.5px solid var(--line);
@@ -2719,6 +2733,11 @@ function resetJiraImportState(){
     candidates: [], // [{key, summary, issueType, included, source}]
     items: [],      // [{key, issueType, isEpic, summary, pulledMarkdown, pullError, reshapedMarkdown, reshapeError, guidance, includeForRefine, wasRefined, refinedMarkdown, refineError, includeForPush}]
     sharedGuidance: '',
+    guideMode: 'manual', // 'manual' | 'ai-route'
+    guideSubStep: null,  // null | 'ai-confirm'
+    aiRouteFeedback: '',
+    aiRouteMatches: [],
+    aiRouteNoMatch: false,
     pushResults: [],
   };
 }
@@ -2933,34 +2952,152 @@ function jiraImportGuideRowHtml(item, idx){
 }
 
 function renderJiraImportGuide(){
+  if(jiraImportState.guideSubStep === 'ai-confirm'){ renderJiraImportAiRouteConfirm(); return; }
   const root = document.getElementById('jiraImportRoot');
   root.innerHTML = `
     <h2>Import from Jira</h2>
-    <p class="mock-page-sub">Reshaped and ready. Add guidance if you want changes — shared guidance applies to everything checked below; a per-item note adds on top of that for just one.</p>
-    <div class="field">
-      <label class="jira-field-label">Shared guidance (optional, applies to every checked item)</label>
-      <textarea id="importSharedGuidance" rows="3" placeholder="e.g. tighten the acceptance criteria, remove references to the old UI...">${escapeHtml(jiraImportState.sharedGuidance)}</textarea>
+    <p class="mock-page-sub">Reshaped and ready. Choose how to decide what gets refined.</p>
+    <div class="jira-mode-toggle" id="guideModeToggle">
+      <button type="button" data-mode="manual" class="${jiraImportState.guideMode !== 'ai-route' ? 'active' : ''}">Select items manually</button>
+      <button type="button" data-mode="ai-route" class="${jiraImportState.guideMode === 'ai-route' ? 'active' : ''}">Give one note, let AI find the item(s)</button>
     </div>
+    <div id="guideModeBody"></div>
+  `;
+  document.querySelectorAll('#guideModeToggle button').forEach(btn => {
+    btn.onclick = () => { jiraImportState.guideMode = btn.dataset.mode; renderJiraImportGuide(); };
+  });
+
+  const body = document.getElementById('guideModeBody');
+  if(jiraImportState.guideMode === 'ai-route'){
+    body.innerHTML = `
+      <div class="field">
+        <label class="jira-field-label">Feedback</label>
+        <textarea id="aiRouteFeedback" rows="4" placeholder="Describe what needs to change — the AI will figure out which item(s) it applies to. You'll see its picks before anything is refined.">${escapeHtml(jiraImportState.aiRouteFeedback || '')}</textarea>
+      </div>
+      <div id="aiRouteStatus"></div>
+      <div class="jira-modal-actions">
+        <button class="primary" id="aiRouteFindBtn">Find matching item(s)</button>
+      </div>
+    `;
+    document.getElementById('aiRouteFeedback').addEventListener('input', (e) => { jiraImportState.aiRouteFeedback = e.target.value; });
+    document.getElementById('aiRouteFindBtn').onclick = jiraImportRunAiRoute;
+  } else {
+    body.innerHTML = `
+      <div class="field">
+        <label class="jira-field-label">Shared guidance (optional, applies to every checked item)</label>
+        <textarea id="importSharedGuidance" rows="3" placeholder="e.g. tighten the acceptance criteria, remove references to the old UI...">${escapeHtml(jiraImportState.sharedGuidance)}</textarea>
+      </div>
+      <div class="jira-import-checklist">
+        ${jiraImportState.items.map((item, idx) => jiraImportGuideRowHtml(item, idx)).join('')}
+      </div>
+      <div class="jira-modal-actions" style="margin-top:20px;">
+        <button class="primary" id="importRefineBtn">Refine selected</button>
+        <button class="secondary" id="importGuideBackBtn">Back</button>
+      </div>
+    `;
+    document.getElementById('importSharedGuidance').addEventListener('input', (e) => { jiraImportState.sharedGuidance = e.target.value; });
+    document.querySelectorAll('.jira-import-row input[type=checkbox]').forEach(cb => {
+      cb.onchange = () => { jiraImportState.items[Number(cb.dataset.idx)].includeForRefine = cb.checked; };
+    });
+    document.querySelectorAll('.jira-import-guidance-input').forEach(inp => {
+      inp.oninput = () => { jiraImportState.items[Number(inp.dataset.idx)].guidance = inp.value; };
+    });
+    document.querySelectorAll('.jira-import-view-btn').forEach(btn => {
+      btn.onclick = () => jiraImportToggleView(Number(btn.dataset.idx), 'reshapedMarkdown');
+    });
+    document.getElementById('importGuideBackBtn').onclick = () => { jiraImportState.step = 'curate'; renderJiraImportStep(); };
+    document.getElementById('importRefineBtn').onclick = jiraImportRunRefine;
+  }
+}
+
+// --- AI-decided targeting: one note, model identifies which item(s) it applies to,
+// user confirms/corrects before anything actually refines. ---
+
+async function jiraImportIdentifyTargets(feedback, items){
+  const itemsSummary = items.map(item => {
+    const content = jiraImportFinalMarkdown(item) || item.reshapedMarkdown || '';
+    return `- KEY: ${item.key} | TYPE: ${item.isEpic ? 'Epic' : 'Story'} | TITLE: ${item.summary}\n  Content excerpt: ${content.slice(0, 500).replace(/\n/g, ' ')}`;
+  }).join('\n\n');
+  const systemPrompt = `You route a piece of PM feedback to the correct item(s) in a list of one Epic and its Stories. Given the feedback and the items with a content excerpt each, decide which item KEY(s) this feedback is actually about and should be updated to address. If the feedback plausibly applies to more than one item, include all of them rather than guessing narrowly — a human will review your picks before anything changes. Respond with ONLY a JSON array of key strings, nothing else, e.g. ["MGA-88"]. If truly nothing matches, respond with [].`;
+  const userText = `ITEMS:\n${itemsSummary}\n\nFEEDBACK TO ROUTE: "${feedback}"`;
+  const resp = await callClaudeProxy({
+    model: 'claude-sonnet-4-6', max_tokens: 300,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+  });
+  if(!resp.ok){
+    const errText = await resp.text();
+    throw new Error(`API error ${resp.status}: ${errText.slice(0, 200)}`);
+  }
+  const data = await resp.json();
+  const text = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  let keys = [];
+  try{
+    const match = text.match(/\[[\s\S]*\]/);
+    keys = match ? JSON.parse(match[0]) : [];
+  }catch(e){ keys = []; }
+  return keys.filter(k => items.some(i => i.key === k));
+}
+
+async function jiraImportRunAiRoute(){
+  const feedback = (jiraImportState.aiRouteFeedback || '').trim();
+  const statusEl = document.getElementById('aiRouteStatus');
+  if(!feedback){ if(statusEl) statusEl.innerHTML = '<span style="color:var(--danger);">Describe the feedback first.</span>'; return; }
+  const btn = document.getElementById('aiRouteFindBtn');
+  if(btn) btn.disabled = true;
+  if(statusEl) statusEl.innerHTML = statusBanner('warn', 'progress', 'Finding the right item(s)…', '');
+  try{
+    const eligible = jiraImportState.items.filter(i => !i.pullError && !i.reshapeError);
+    const matchedKeys = await jiraImportIdentifyTargets(feedback, eligible);
+    jiraImportState.aiRouteMatches = matchedKeys.length ? matchedKeys : eligible.map(i => i.key);
+    jiraImportState.aiRouteNoMatch = matchedKeys.length === 0;
+    jiraImportState.guideSubStep = 'ai-confirm';
+    renderJiraImportGuide();
+  }catch(err){
+    if(btn) btn.disabled = false;
+    if(statusEl) statusEl.innerHTML = statusBanner('err', '⚠', 'Could not identify matching items', escapeHtml(err.message));
+  }
+}
+
+function renderJiraImportAiRouteConfirm(){
+  const root = document.getElementById('jiraImportRoot');
+  const eligible = jiraImportState.items.filter(i => !i.pullError && !i.reshapeError);
+  root.innerHTML = `
+    <h2>Confirm: items to refine</h2>
+    <p class="mock-page-sub">${jiraImportState.aiRouteNoMatch
+      ? "The AI couldn't confidently match this feedback to a specific item — showing everything so you can pick manually instead."
+      : "Based on your feedback, these look like the right item(s). Uncheck anything wrong, or check more."}</p>
+    <div class="jira-confirm-summary" style="margin-bottom:16px;"><b>Feedback:</b> ${escapeHtml(jiraImportState.aiRouteFeedback)}</div>
     <div class="jira-import-checklist">
-      ${jiraImportState.items.map((item, idx) => jiraImportGuideRowHtml(item, idx)).join('')}
+      ${eligible.map(item => `
+        <label class="jira-import-row">
+          <input type="checkbox" data-key="${escapeHtml(item.key)}" ${jiraImportState.aiRouteMatches.includes(item.key) ? 'checked' : ''}>
+          <span class="jira-import-row-key">${escapeHtml(item.key)}</span>
+          <span class="jira-import-row-type">${item.isEpic ? 'Epic' : 'Story'}</span>
+          <span class="jira-import-row-summary">${escapeHtml(item.summary)}</span>
+        </label>
+      `).join('')}
     </div>
     <div class="jira-modal-actions" style="margin-top:20px;">
-      <button class="primary" id="importRefineBtn">Refine selected</button>
-      <button class="secondary" id="importGuideBackBtn">Back</button>
+      <button class="primary" id="aiRouteConfirmBtn">Refine confirmed item(s)</button>
+      <button class="secondary" id="aiRouteBackBtn">Back</button>
     </div>
   `;
-  document.getElementById('importSharedGuidance').addEventListener('input', (e) => { jiraImportState.sharedGuidance = e.target.value; });
-  document.querySelectorAll('.jira-import-row input[type=checkbox]').forEach(cb => {
-    cb.onchange = () => { jiraImportState.items[Number(cb.dataset.idx)].includeForRefine = cb.checked; };
-  });
-  document.querySelectorAll('.jira-import-guidance-input').forEach(inp => {
-    inp.oninput = () => { jiraImportState.items[Number(inp.dataset.idx)].guidance = inp.value; };
-  });
-  document.querySelectorAll('.jira-import-view-btn').forEach(btn => {
-    btn.onclick = () => jiraImportToggleView(Number(btn.dataset.idx), 'reshapedMarkdown');
-  });
-  document.getElementById('importGuideBackBtn').onclick = () => { jiraImportState.step = 'curate'; renderJiraImportStep(); };
-  document.getElementById('importRefineBtn').onclick = jiraImportRunRefine;
+  document.getElementById('aiRouteBackBtn').onclick = () => { jiraImportState.guideSubStep = null; renderJiraImportGuide(); };
+  document.getElementById('aiRouteConfirmBtn').onclick = () => {
+    const checkedKeys = Array.from(document.querySelectorAll('.jira-import-row input[type=checkbox]:checked')).map(cb => cb.dataset.key);
+    jiraImportState.items.forEach(item => {
+      if(checkedKeys.includes(item.key)){
+        item.includeForRefine = true;
+        item.guidance = jiraImportState.aiRouteFeedback;
+      } else {
+        item.includeForRefine = false;
+      }
+    });
+    jiraImportState.sharedGuidance = '';
+    jiraImportState.guideSubStep = null;
+    jiraImportRunRefine();
+  };
 }
 
 function jiraImportToggleView(idx, field){
@@ -3038,9 +3175,46 @@ function jiraImportReviewRowHtml(item, idx){
         <button type="button" class="jira-import-view-btn" data-idx="${idx}">View</button>
       </label>
       ${item.refineError ? `<div class="hint" style="color:var(--danger);">Refine failed: ${escapeHtml(item.refineError)} — the reshaped (pre-refine) version will be used instead.</div>` : ''}
+      <div class="jira-import-regenerate">
+        <input type="text" class="jira-import-regen-input" data-idx="${idx}" placeholder="Not happy with this one? Describe what to change and regenerate just it...">
+        <button type="button" class="jira-import-regen-btn" data-idx="${idx}">Regenerate this item</button>
+        <span class="hint" id="importRegenStatus-${idx}"></span>
+      </div>
       <div class="jira-import-detail" id="importDetail-${idx}" style="display:none;"></div>
     </div>
   `;
+}
+
+async function jiraImportRegenerateOne(idx){
+  const item = jiraImportState.items[idx];
+  const input = document.querySelector(`.jira-import-regen-input[data-idx="${idx}"]`);
+  const feedback = input ? input.value.trim() : '';
+  const statusEl = document.getElementById(`importRegenStatus-${idx}`);
+  if(!feedback){
+    if(statusEl) statusEl.innerHTML = '<span style="color:var(--danger);">Add feedback first.</span>';
+    return;
+  }
+  const btn = document.querySelector(`.jira-import-regen-btn[data-idx="${idx}"]`);
+  if(btn) btn.disabled = true;
+  if(statusEl) statusEl.textContent = 'Regenerating…';
+  try{
+    const currentContent = jiraImportFinalMarkdown(item);
+    const result = await callClaude({
+      intent: item.isEpic ? 'REFINE_EXISTING_EPIC' : 'REFINE_EXISTING_STORY',
+      epicText: item.isEpic ? currentContent : '',
+      storiesText: item.isEpic ? '' : currentContent,
+      extraNotes: feedback,
+      images: [], codeFiles: [], flowImages: [],
+    });
+    item.refinedMarkdown = result.text;
+    item.wasRefined = true;
+    item.refineError = null;
+    item.includeForPush = true;
+    renderJiraImportReview(); // full re-render: reflects the new "refined" badge, rebuilds View fresh, re-checks the push box
+  }catch(err){
+    if(btn) btn.disabled = false;
+    if(statusEl) statusEl.innerHTML = `<span style="color:var(--danger);">${escapeHtml(err.message)}</span>`;
+  }
 }
 
 function renderJiraImportReview(){
@@ -3048,7 +3222,7 @@ function renderJiraImportReview(){
   const validIdxs = jiraImportState.items.map((it, i) => i).filter(i => !jiraImportState.items[i].pullError && !jiraImportState.items[i].reshapeError);
   root.innerHTML = `
     <h2>Import from Jira</h2>
-    <p class="mock-page-sub">Here's everything, final form. Pick what actually goes back to Jira — checked by default only for items that were refined.</p>
+    <p class="mock-page-sub">Here's everything, final form. Not happy with one? Give it feedback and regenerate just that item — everything else stays as-is. Pick what actually goes back to Jira; checked by default only for items that were refined.</p>
     <div class="jira-import-checklist">
       ${validIdxs.map(idx => jiraImportReviewRowHtml(jiraImportState.items[idx], idx)).join('')}
     </div>
@@ -3062,6 +3236,9 @@ function renderJiraImportReview(){
   });
   document.querySelectorAll('.jira-import-view-btn').forEach(btn => {
     btn.onclick = () => jiraImportToggleView(Number(btn.dataset.idx), 'final');
+  });
+  document.querySelectorAll('.jira-import-regen-btn').forEach(btn => {
+    btn.onclick = () => jiraImportRegenerateOne(Number(btn.dataset.idx));
   });
   document.getElementById('importReviewBackBtn').onclick = () => { jiraImportState.step = 'guide'; renderJiraImportStep(); };
   document.getElementById('importPushSelectedBtn').onclick = () => { jiraImportState.step = 'confirm-push'; renderJiraImportStep(); };
