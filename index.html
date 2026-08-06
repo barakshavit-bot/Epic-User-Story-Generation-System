@@ -342,6 +342,9 @@
     padding:6px 11px;border-radius:6px;cursor:pointer;flex-shrink:0;
   }
   .jira-import-regen-btn:disabled{opacity:0.5;cursor:not-allowed;}
+  .jira-import-diff .doc{
+    font-size:13px;border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:4px;background:#FDFCFF;
+  }
 
   .feedback-box{
     border:1.5px solid var(--line);
@@ -1862,7 +1865,10 @@ function parseOutputIntoJiraItems(raw){
       items.push({
         type: isStory ? 'story' : 'epic',
         title: isStory ? (sectionTitle.replace(/^story\s*\d*:?\s*/i, '').trim() || sectionTitle) : extractHistoryTitle(sectionBodyOnly),
-        markdown: sectionText,
+        // Always the body only, excluding this item's own "## " wrapper line — that line is
+        // purely a title/number marker, already captured in `title` above, and would otherwise
+        // duplicate the issue's Summary field once pushed to Jira.
+        markdown: sectionBodyOnly,
       });
     }
     if(!items.length) items = [{ type: 'epic', title: extractHistoryTitle(raw), markdown: raw.trim() }];
@@ -1879,15 +1885,23 @@ function deriveShortEpicTitle(statementSentence){
   s = s.replace(/^as an?\s+[^,]+,\s*i\s+wish\s+to\s+/i, '');
   s = s.replace(/\s+so\s+that\s+.*$/i, '');
   s = s.replace(/\.+$/, '');
-  if(!s) return (statementSentence || '').trim();
-  return s.charAt(0).toUpperCase() + s.slice(1);
+  if(!s) s = (statementSentence || '').trim();
+  s = s.charAt(0).toUpperCase() + s.slice(1);
+  // Keep Epic titles short and scannable in Jira — hard cap at 8 words.
+  const words = s.split(/\s+/).filter(Boolean);
+  if(words.length > 8) s = words.slice(0, 8).join(' ').replace(/[,;:]+$/, '');
+  return s;
 }
 
 // Jira-specific content cleanup, applied once per item right before it's ever pushed:
 // - Epics get a short "4MGAs: <name>" title derived from the Statement, and the Statement
 //   heading + its bold emphasis are dropped (redundant once this becomes the issue itself).
-// - The Acceptance Criteria heading is dropped for both types — its content is going into
-//   Jira's own "Acceptance Criteria" field/section, which is already labeled.
+// - The "### Acceptance Criteria" heading is intentionally left intact here — the backend's
+//   splitMarkdownForJiraFields needs to see it to correctly route that section into Jira's own
+//   Acceptance Criteria field. Removing it here would blind that routing (this was a real bug:
+//   AC content fell into Description while Edge Cases still routed correctly, since only the
+//   AC heading was being stripped). The redundant heading text is removed backend-side instead,
+//   after routing has already happened.
 function prepareItemForJira(item){
   let markdown = item.markdown;
   let title = item.title;
@@ -1901,7 +1915,7 @@ function prepareItemForJira(item){
     }
   }
 
-  markdown = markdown.replace(/^###\s+Acceptance Criteria\s*$\n?/im, '').replace(/\n{3,}/g, '\n\n').trim();
+  markdown = markdown.replace(/\n{3,}/g, '\n\n').trim();
 
   return { ...item, title, markdown };
 }
@@ -3210,6 +3224,7 @@ async function jiraImportRegenerateOne(idx){
     item.wasRefined = true;
     item.refineError = null;
     item.includeForPush = true;
+    item.guidance = feedback; // keep the actual feedback that produced this version, for the post-push insight step
     renderJiraImportReview(); // full re-render: reflects the new "refined" badge, rebuilds View fresh, re-checks the push box
   }catch(err){
     if(btn) btn.disabled = false;
@@ -3302,6 +3317,9 @@ async function jiraImportDoPush(){
 
 function renderJiraImportDone(){
   const root = document.getElementById('jiraImportRoot');
+  const pushedAndRefinedItems = jiraImportState.items.filter(item =>
+    item.wasRefined && jiraImportState.pushResults.some(r => r.key === item.key && r.ok)
+  );
   root.innerHTML = `
     <h2>Import complete</h2>
     <div class="jira-confirm-summary">
@@ -3310,11 +3328,118 @@ function renderJiraImportDone(){
         : `<div style="color:var(--danger);">✗ <b>${escapeHtml(r.key)}</b> — ${escapeHtml(r.error)}</div>`
       ).join('') || '<div>Nothing was pushed.</div>'}
     </div>
+    ${pushedAndRefinedItems.length ? `
+    <div style="margin-top:28px;">
+      <h3 style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--navy);margin-bottom:6px;">Learn from what changed</h3>
+      <p class="mock-page-sub">You made real edits to ${pushedAndRefinedItems.length} item${pushedAndRefinedItems.length > 1 ? 's' : ''} before pushing. Review any of them to distill a lesson for future imports — nothing is remembered until you approve it.</p>
+      <div class="jira-import-checklist">
+        ${pushedAndRefinedItems.map(item => jiraImportInsightRowHtml(item)).join('')}
+      </div>
+    </div>` : ''}
     <div class="jira-modal-actions" style="margin-top:20px;">
       <button class="primary" id="importStartNewBtn">Start a new import</button>
     </div>
   `;
   document.getElementById('importStartNewBtn').onclick = () => { resetJiraImportState(); renderJiraImportStep(); };
+  document.querySelectorAll('.jira-import-insight-btn').forEach(btn => {
+    btn.onclick = () => jiraImportOpenInsight(btn.dataset.key);
+  });
+}
+
+function jiraImportInsightRowHtml(item){
+  return `
+    <div class="jira-import-item-card">
+      <div class="jira-import-row">
+        <span class="jira-import-row-key">${escapeHtml(item.key)}</span>
+        <span class="jira-import-row-type">${item.isEpic ? 'Epic' : 'Story'}</span>
+        <span class="jira-import-row-summary">${escapeHtml(item.summary)}</span>
+        <button type="button" class="jira-import-insight-btn" data-key="${escapeHtml(item.key)}">Review &amp; learn from this</button>
+      </div>
+      <div class="jira-import-insight-body" id="insightBody-${escapeHtml(item.key)}" style="display:none;"></div>
+    </div>
+  `;
+}
+
+async function jiraImportGenerateInsight(item){
+  const feedbackUsed = item.guidance || jiraImportState.aiRouteFeedback || '(no specific feedback recorded — general refine pass)';
+  const systemPrompt = `You are analyzing one specific edit a PM made to an imported Epic/Story, to extract a general, reusable lesson for future generations — not just a restatement of the diff. State it as a short, actionable guideline (1-3 sentences) suitable for a "lessons learned" list that will influence future Epic/Story generation. Respond with ONLY the guideline text, nothing else — no preamble, no quotes around it.`;
+  const userText = `BEFORE:\n${item.reshapedMarkdown || ''}\n\nAFTER (the PM's feedback that produced this was: "${feedbackUsed}"):\n${item.refinedMarkdown || ''}\n\nWhat's the generalizable lesson here?`;
+  const resp = await callClaudeProxy({
+    model: 'claude-sonnet-4-6', max_tokens: 300,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+  });
+  if(!resp.ok){
+    const errText = await resp.text();
+    throw new Error(`API error ${resp.status}: ${errText.slice(0, 200)}`);
+  }
+  const data = await resp.json();
+  return data.content.filter(b => b.type === 'text').map(b => b.text).join('').trim();
+}
+
+async function jiraImportOpenInsight(key){
+  const item = jiraImportState.items.find(i => i.key === key);
+  const body = document.getElementById(`insightBody-${key}`);
+  if(!item || !body) return;
+
+  if(body.dataset.built){
+    body.style.display = body.style.display === 'none' ? 'block' : 'none';
+    return;
+  }
+  body.style.display = 'block';
+  body.dataset.built = '1';
+  body.innerHTML = `
+    <div class="jira-import-diff">
+      <div class="jira-field-label">Before (reshaped, pre-refine)</div>
+      <div class="doc" id="insightBefore-${key}"></div>
+      <div class="jira-field-label" style="margin-top:14px;">After (what was actually pushed)</div>
+      <div class="doc" id="insightAfter-${key}"></div>
+    </div>
+    <div id="insightStatus-${key}" style="margin-top:12px;">${statusBanner('warn', 'progress', 'Distilling a lesson…', '')}</div>
+  `;
+  document.getElementById(`insightBefore-${key}`).appendChild(buildDocFragment(item.reshapedMarkdown || ''));
+  document.getElementById(`insightAfter-${key}`).appendChild(buildDocFragment(jiraImportFinalMarkdown(item) || ''));
+
+  try{
+    const insight = await jiraImportGenerateInsight(item);
+    document.getElementById(`insightStatus-${key}`).innerHTML = `
+      <div class="jira-confirm-summary">
+        <div><b>Suggested lesson:</b></div>
+        <div style="margin-top:6px;">${escapeHtml(insight)}</div>
+      </div>
+      <div class="jira-modal-actions" style="margin-top:12px;">
+        <button class="primary" id="approveInsightBtn-${key}">Approve — remember this for future imports</button>
+        <button class="secondary" id="discardInsightBtn-${key}">Discard</button>
+      </div>
+    `;
+    document.getElementById(`approveInsightBtn-${key}`).onclick = () => jiraImportApproveInsight(key, insight);
+    document.getElementById(`discardInsightBtn-${key}`).onclick = () => {
+      document.getElementById(`insightStatus-${key}`).innerHTML = '<span class="hint">Discarded.</span>';
+    };
+  }catch(err){
+    document.getElementById(`insightStatus-${key}`).innerHTML = statusBanner('err', '⚠', 'Could not generate a lesson', escapeHtml(err.message));
+  }
+}
+
+async function jiraImportApproveInsight(key, insightText){
+  const statusEl = document.getElementById(`insightStatus-${key}`);
+  const entry = {
+    id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+    timestamp: Date.now(),
+    mode: 'JIRA_IMPORT_INSIGHT',
+    rating: 'up',
+    note: insightText,
+    snippet: (jiraImportState.items.find(i => i.key === key) || {}).summary || '',
+    historyEntryId: null,
+  };
+  feedbackLog.unshift(entry);
+  if(feedbackLog.length > MAX_FEEDBACK_ENTRIES) feedbackLog = feedbackLog.slice(0, MAX_FEEDBACK_ENTRIES);
+  try{
+    await saveFeedbackLog();
+    if(statusEl) statusEl.innerHTML = '<span class="hint" style="color:var(--given);">Saved — this will help shape future generations, including outside this import wizard.</span>';
+  }catch(err){
+    if(statusEl) statusEl.innerHTML = statusBanner('err', '⚠', 'Could not save this lesson', escapeHtml(err.message));
+  }
 }
 
 async function summarizeChunk(filePath, idx, total, chunkStr, attempt){
