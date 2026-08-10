@@ -3871,21 +3871,41 @@ async function callClaude({ intent, epicText, storiesText, extraNotes, images, c
 
   contentBlocks.push({ type: 'text', text: userText });
 
-  const response = await callClaudeProxy({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 8192,
-    system: SYSTEM_PROMPT + buildFeedbackContext(),
-    messages: [{ role: 'user', content: contentBlocks }]
-  });
+  // Automatic continuation: if the model hits the length limit mid-output, keep going
+  // seamlessly rather than surfacing that as something the user has to work around. Each
+  // continuation adds what was generated so far as an assistant turn, then asks for the rest —
+  // the standard multi-turn continuation pattern. Capped so a genuinely runaway case still
+  // terminates rather than looping forever.
+  const messages = [{ role: 'user', content: contentBlocks }];
+  let fullText = '';
+  let stopReason = null;
+  const MAX_CONTINUATIONS = 4;
 
-  if(!response.ok){
-    const errText = await response.text();
-    throw new Error(`API error ${response.status}: ${errText.slice(0,200)}`);
+  for(let attempt = 0; attempt <= MAX_CONTINUATIONS; attempt++){
+    const response = await callClaudeProxy({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 64000,
+      system: SYSTEM_PROMPT + buildFeedbackContext(),
+      messages,
+    });
+
+    if(!response.ok){
+      const errText = await response.text();
+      throw new Error(`API error ${response.status}: ${errText.slice(0,200)}`);
+    }
+
+    const data = await response.json();
+    const chunkText = data.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    fullText += chunkText;
+    stopReason = data.stop_reason;
+
+    if(stopReason !== 'max_tokens' || attempt === MAX_CONTINUATIONS) break;
+
+    messages.push({ role: 'assistant', content: chunkText });
+    messages.push({ role: 'user', content: [{ type: 'text', text: 'Continue exactly where you left off. Do not repeat any content already written above — produce only the remaining content, picking up seamlessly from the exact point you stopped, following the same schema formatting.' }] });
   }
 
-  const data = await response.json();
-  const text = data.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-  return { text, truncated: data.stop_reason === 'max_tokens' };
+  return { text: fullText, truncated: stopReason === 'max_tokens' };
 }
 
 // ---- Rendering: markdown-ish schema -> doc with BDD ledger styling ----
