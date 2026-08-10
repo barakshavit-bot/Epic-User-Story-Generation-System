@@ -388,6 +388,11 @@
     margin-bottom:10px;
   }
   .feedback-box textarea:focus{outline:none;border-color:var(--navy-light);}
+  .feedback-pin-row{
+    display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--slate);
+    margin-bottom:10px;cursor:pointer;font-family:'Inter',sans-serif;text-transform:none;letter-spacing:normal;font-weight:400;
+  }
+  .feedback-pin-row input{accent-color:var(--yellow);}
   .feedback-actions{display:flex;gap:8px;flex-wrap:wrap;}
   .feedback-actions button{
     font-family:'JetBrains Mono',monospace;
@@ -435,6 +440,16 @@
   .feedback-entry .snippet{
     margin:4px 0 0;font-size:12px;color:var(--slate);font-style:italic;
   }
+  .feedback-entry.pinned{border-color:rgba(184,121,10,0.4);background:#FFFBF0;}
+  .feedback-pinned-badge{
+    background:#FFF6DE;color:#8A5E06;padding:2px 7px;border-radius:5px;font-weight:600;
+  }
+  .feedback-pin-toggle{
+    border:1px solid var(--line);background:#fff;color:var(--navy-light);cursor:pointer;
+    font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:600;
+    padding:3px 8px;border-radius:5px;
+  }
+  .feedback-pin-toggle:hover{border-color:var(--yellow);color:#8A5E06;}
 
   .history-entry{
     border:1px solid var(--line);
@@ -1682,6 +1697,16 @@ async function clearSavedMock(){
 // --- Feedback loop: saved persistently, folded into future generations ---
 
 const MAX_FEEDBACK_ENTRIES = 50;
+
+// Keeps the log under the cap without ever silently dropping a pinned standing rule —
+// pinned entries are always kept; unpinned ones fill whatever room is left, newest first.
+function trimFeedbackLog(){
+  if(feedbackLog.length <= MAX_FEEDBACK_ENTRIES) return;
+  const pinned = feedbackLog.filter(f => f.pinned);
+  const unpinned = feedbackLog.filter(f => !f.pinned);
+  const remainingSlots = Math.max(0, MAX_FEEDBACK_ENTRIES - pinned.length);
+  feedbackLog = [...pinned, ...unpinned.slice(0, remainingSlots)];
+}
 const MAX_FEEDBACK_IN_PROMPT = 15;
 
 async function loadFeedbackLog(){
@@ -1722,26 +1747,43 @@ async function removeFeedbackEntry(id){
 
 function buildFeedbackContext(){
   if(!feedbackLog.length) return '';
-  const recent = feedbackLog.slice(0, MAX_FEEDBACK_IN_PROMPT);
-  const lines = recent.map(f => {
+
+  const pinned = feedbackLog.filter(f => f.pinned);
+  const unpinned = feedbackLog.filter(f => !f.pinned).slice(0, MAX_FEEDBACK_IN_PROMPT);
+
+  const describeEntry = (f) => {
     const tag = f.rating === 'up' ? 'liked' : f.rating === 'down' ? 'disliked' : 'noted';
     const modeLabel = f.mode.replace(/_/g, ' ').toLowerCase();
     const noteText = f.note ? f.note : '(rating only, no written note)';
     return `- [${tag}, from a past ${modeLabel} run] ${noteText}`;
-  });
-  return `\n\n---\n\n# Lessons From Past Feedback\nThe person using this tool has rated or commented on earlier outputs. Apply these lessons to keep improving quality, tone, and content — but they refine HOW you write within the schema, they never change the Output Schemas or Operational Modes above:\n${lines.join('\n')}`;
+  };
+
+  let context = '';
+
+  if(pinned.length){
+    context += `\n\n---\n\n# Standing Rules\nThe person using this tool has explicitly pinned these as rules to always follow — not suggestions, not one-off notes. Apply every one of them to this generation regardless of how many other things are also being asked for. These do not change the Output Schemas or Operational Modes above, only how you write within them:\n${pinned.map(describeEntry).join('\n')}`;
+  }
+
+  if(unpinned.length){
+    context += `\n\n---\n\n# Lessons From Past Feedback\nThe person using this tool has rated or commented on earlier outputs. Apply these lessons to keep improving quality, tone, and content — but they refine HOW you write within the schema, they never change the Output Schemas or Operational Modes above:\n${unpinned.map(describeEntry).join('\n')}`;
+  }
+
+  return context;
 }
 
 function feedbackPageTemplate(){
   const hasFeedback = feedbackLog.length > 0;
-  const rows = feedbackLog.map(f => {
+  const sorted = [...feedbackLog].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+  const rows = sorted.map(f => {
     const linkedEntry = f.historyEntryId ? historyLog.find(h => h.id === f.historyEntryId) : null;
     return `
-    <div class="feedback-entry">
+    <div class="feedback-entry${f.pinned ? ' pinned' : ''}">
       <div class="feedback-entry-head">
         <span class="feedback-tag">${f.rating === 'up' ? '👍' : f.rating === 'down' ? '👎' : '💬'}</span>
         <span class="feedback-mode">${f.mode.replace(/_/g, ' ')}</span>
+        ${f.pinned ? `<span class="feedback-pinned-badge">📌 standing rule</span>` : ''}
         <span class="feedback-date">${new Date(f.timestamp).toLocaleString()}</span>
+        <button class="feedback-pin-toggle" data-id="${f.id}" title="${f.pinned ? 'Unpin — back to a rotating recent note' : 'Pin — always apply this, never crowded out'}">${f.pinned ? 'Unpin' : 'Pin'}</button>
         <button class="feedback-remove" data-id="${f.id}" title="Remove">&times;</button>
       </div>
       ${f.note ? `<p>${escapeHtml(f.note)}</p>` : ''}
@@ -1755,7 +1797,7 @@ function feedbackPageTemplate(){
   return `
   <div class="mock-page">
     <h2>Feedback</h2>
-    <p class="mock-page-sub">This is a parent setting too. Every rating or note you leave on a generated Epic or Story is tied to that exact output and saved here — it's folded into future generations automatically, which is how the tool learns your preferences over time.</p>
+    <p class="mock-page-sub">This is a parent setting too. Every rating or note you leave on a generated Epic or Story is tied to that exact output and saved here — it's folded into future generations automatically, which is how the tool learns your preferences over time. <b>Pinned</b> notes are always applied, every generation, and can't get crowded out by newer feedback — pin anything you're tired of repeating.</p>
     ${hasFeedback
       ? `<button id="clearFeedbackBtn" style="margin-bottom:16px;font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600;border:1.5px solid var(--line);background:#fff;color:var(--danger);padding:6px 11px;border-radius:6px;cursor:pointer;">Clear all feedback (${feedbackLog.length})</button>`
       : `<div class="hint">No feedback saved yet. Rate or comment on an output from the Generate tab to start building this up.</div>`
@@ -1770,6 +1812,9 @@ function wireFeedbackPage(){
   document.querySelectorAll('.feedback-remove').forEach(btn => {
     btn.onclick = () => removeFeedbackEntry(btn.dataset.id);
   });
+  document.querySelectorAll('.feedback-pin-toggle').forEach(btn => {
+    btn.onclick = () => toggleFeedbackPin(btn.dataset.id);
+  });
   document.querySelectorAll('.feedback-view-output').forEach(btn => {
     btn.onclick = () => {
       currentView = 'history';
@@ -1781,6 +1826,14 @@ function wireFeedbackPage(){
       }
     };
   });
+}
+
+async function toggleFeedbackPin(id){
+  const entry = feedbackLog.find(f => f.id === id);
+  if(!entry) return;
+  entry.pinned = !entry.pinned;
+  await saveFeedbackLog();
+  if(currentView === 'feedback') renderApp();
 }
 
 // --- History: every generated document, stored locally, auto-expiring unless archived ---
@@ -3564,7 +3617,7 @@ async function jiraImportApproveInsight(key, insightText){
     historyEntryId: null,
   };
   feedbackLog.unshift(entry);
-  if(feedbackLog.length > MAX_FEEDBACK_ENTRIES) feedbackLog = feedbackLog.slice(0, MAX_FEEDBACK_ENTRIES);
+  trimFeedbackLog();
   try{
     await saveFeedbackLog();
     if(statusEl) statusEl.innerHTML = '<span class="hint" style="color:var(--given);">Saved — this will help shape future generations, including outside this import wizard.</span>';
@@ -3915,7 +3968,7 @@ async function callClaude({ intent, epicText, storiesText, extraNotes, images, c
   const messages = [{ role: 'user', content: contentBlocks }];
   let fullText = '';
   let stopReason = null;
-  const MAX_CONTINUATIONS = 4;
+  const MAX_CONTINUATIONS = 9;
 
   for(let attempt = 0; attempt <= MAX_CONTINUATIONS; attempt++){
     const response = await callClaudeProxy({
@@ -4257,6 +4310,7 @@ function renderOutput(raw, truncated){
       <button type="button" data-rating="down" id="rateDown">👎 Needs work</button>
     </div>
     <textarea id="feedbackNote" rows="3" placeholder="What would you change? e.g. &quot;too verbose in Technical Notes&quot; or &quot;missing the OFAC edge case&quot;"></textarea>
+    <label class="feedback-pin-row"><input type="checkbox" id="feedbackPin"> Always apply this — pin it as a standing rule instead of a one-off note, so it can't get crowded out later</label>
     <div class="feedback-actions">
       <button type="button" id="saveFeedbackBtn">Save feedback</button>
       <button type="button" id="regenerateBtn">Save &amp; regenerate now</button>
@@ -4280,6 +4334,8 @@ function setFeedbackRating(rating){
 async function submitFeedback(regenerate){
   const noteEl = document.getElementById('feedbackNote');
   const note = noteEl ? noteEl.value.trim() : '';
+  const pinEl = document.getElementById('feedbackPin');
+  const pinned = pinEl ? pinEl.checked : false;
   const notice = document.getElementById('feedbackSavedNotice');
 
   if(!currentRating && !note){
@@ -4293,11 +4349,12 @@ async function submitFeedback(regenerate){
     mode: currentMode,
     rating: currentRating,
     note,
+    pinned,
     snippet: (lastOutput || '').replace(/[#*]/g, '').trim().slice(0, 120),
     historyEntryId: currentHistoryEntryId // ties this feedback to exactly the output just shown — nothing else
   };
   feedbackLog.unshift(entry);
-  if(feedbackLog.length > MAX_FEEDBACK_ENTRIES) feedbackLog = feedbackLog.slice(0, MAX_FEEDBACK_ENTRIES);
+  trimFeedbackLog();
   await saveFeedbackLog();
 
   if(regenerate){
@@ -4305,7 +4362,7 @@ async function submitFeedback(regenerate){
     await handleGenerate(note || undefined);
   } else if(notice){
     notice.style.color = 'var(--given)';
-    notice.textContent = 'Saved. Future Epics and Stories from this tool will take this into account.';
+    notice.textContent = pinned ? 'Saved as a standing rule — every future generation will apply it.' : 'Saved. Future Epics and Stories from this tool will take this into account.';
   }
 }
 
