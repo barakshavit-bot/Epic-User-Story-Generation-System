@@ -3295,6 +3295,8 @@ async function jiraImportDoPush(){
 
   await mapWithConcurrency(toPush, 3, async (item) => {
     const parsed = parseOutputIntoJiraItems(jiraImportFinalMarkdown(item))[0];
+    item.pushedMarkdown = parsed.markdown;
+    item.pushedTitle = parsed.title;
     try{
       const result = await callJiraProxy('updateIssue', {
         issueKey: item.key,
@@ -3331,7 +3333,7 @@ function renderJiraImportDone(){
     ${pushedAndRefinedItems.length ? `
     <div style="margin-top:28px;">
       <h3 style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--navy);margin-bottom:6px;">Learn from what changed</h3>
-      <p class="mock-page-sub">You made real edits to ${pushedAndRefinedItems.length} item${pushedAndRefinedItems.length > 1 ? 's' : ''} before pushing. Review any of them to distill a lesson for future imports — nothing is remembered until you approve it.</p>
+      <p class="mock-page-sub">Check whether anyone has edited these ${pushedAndRefinedItems.length} item${pushedAndRefinedItems.length > 1 ? 's' : ''} in Jira since this push — a fresh comparison against the ticket's current state, not against your own refinement. If someone corrected something, there's a lesson worth learning. Nothing is remembered until you approve it.</p>
       <div class="jira-import-checklist">
         ${pushedAndRefinedItems.map(item => jiraImportInsightRowHtml(item)).join('')}
       </div>
@@ -3360,10 +3362,16 @@ function jiraImportInsightRowHtml(item){
   `;
 }
 
-async function jiraImportGenerateInsight(item){
-  const feedbackUsed = item.guidance || jiraImportState.aiRouteFeedback || '(no specific feedback recorded — general refine pass)';
-  const systemPrompt = `You are analyzing one specific edit a PM made to an imported Epic/Story, to extract a general, reusable lesson for future generations — not just a restatement of the diff. State it as a short, actionable guideline (1-3 sentences) suitable for a "lessons learned" list that will influence future Epic/Story generation. Respond with ONLY the guideline text, nothing else — no preamble, no quotes around it.`;
-  const userText = `BEFORE:\n${item.reshapedMarkdown || ''}\n\nAFTER (the PM's feedback that produced this was: "${feedbackUsed}"):\n${item.refinedMarkdown || ''}\n\nWhat's the generalizable lesson here?`;
+async function jiraImportFetchCurrentLiveContent(key){
+  const res = await callJiraProxy('pullIssuesContent', { issueKeys: [key] });
+  const found = res.issues.find(i => i.key === key);
+  if(!found || found.error) throw new Error(found && found.error ? (found.error.errorMessages ? found.error.errorMessages.join(', ') : JSON.stringify(found.error)) : 'Could not fetch the current ticket.');
+  return found.pulledMarkdown;
+}
+
+async function jiraImportGenerateInsight(pushedMarkdown, currentMarkdown){
+  const systemPrompt = `You compare what an automated tool pushed to a Jira issue against that issue's CURRENT content, fetched fresh just now. The current content may be identical (nothing happened since the push) or may reflect a human's manual edits in Jira afterward. Note: both sides went through a markdown<->Jira-format conversion, so ignore purely cosmetic differences in formatting, spacing, bullet style, or line breaks — focus only on substantive content changes (wording, requirements, acceptance criteria, scope). If there is no substantive difference, respond with EXACTLY the single token NO_CHANGE and nothing else. If there IS a substantive difference, respond with a short, actionable, generalizable lesson (1-3 sentences) about what a human correcting this reveals for future automated generation — not a restatement of the diff, a lesson. Respond with ONLY that lesson text, nothing else.`;
+  const userText = `PUSHED BY THE TOOL:\n${pushedMarkdown || ''}\n\nCURRENT CONTENT IN JIRA (fetched just now):\n${currentMarkdown || ''}\n\nIs there a substantive difference, and if so, what's the lesson?`;
   const resp = await callClaudeProxy({
     model: 'claude-sonnet-4-6', max_tokens: 300,
     system: systemPrompt,
@@ -3388,36 +3396,48 @@ async function jiraImportOpenInsight(key){
   }
   body.style.display = 'block';
   body.dataset.built = '1';
-  body.innerHTML = `
-    <div class="jira-import-diff">
-      <div class="jira-field-label">Before (reshaped, pre-refine)</div>
-      <div class="doc" id="insightBefore-${key}"></div>
-      <div class="jira-field-label" style="margin-top:14px;">After (what was actually pushed)</div>
-      <div class="doc" id="insightAfter-${key}"></div>
-    </div>
-    <div id="insightStatus-${key}" style="margin-top:12px;">${statusBanner('warn', 'progress', 'Distilling a lesson…', '')}</div>
-  `;
-  document.getElementById(`insightBefore-${key}`).appendChild(buildDocFragment(item.reshapedMarkdown || ''));
-  document.getElementById(`insightAfter-${key}`).appendChild(buildDocFragment(jiraImportFinalMarkdown(item) || ''));
+  body.innerHTML = `<div id="insightStatus-${key}">${statusBanner('warn', 'progress', 'Fetching the current state of this ticket from Jira…', '')}</div>`;
 
   try{
-    const insight = await jiraImportGenerateInsight(item);
-    document.getElementById(`insightStatus-${key}`).innerHTML = `
-      <div class="jira-confirm-summary">
-        <div><b>Suggested lesson:</b></div>
-        <div style="margin-top:6px;">${escapeHtml(insight)}</div>
+    const currentMarkdown = await jiraImportFetchCurrentLiveContent(key);
+    document.getElementById(`insightStatus-${key}`).innerHTML = statusBanner('warn', 'progress', 'Comparing against what was pushed…', '');
+
+    const pushedMarkdown = item.pushedMarkdown || jiraImportFinalMarkdown(item);
+    const insight = await jiraImportGenerateInsight(pushedMarkdown, currentMarkdown);
+
+    if(insight.trim() === 'NO_CHANGE'){
+      body.innerHTML = `
+        <div class="hint">No substantive changes detected in Jira since this was pushed — nothing to learn yet. If someone edits this ticket later, come back and check again.</div>
+      `;
+      return;
+    }
+
+    body.innerHTML = `
+      <div class="jira-import-diff">
+        <div class="jira-field-label">What was pushed</div>
+        <div class="doc" id="insightBefore-${key}"></div>
+        <div class="jira-field-label" style="margin-top:14px;">Current content in Jira (fetched just now)</div>
+        <div class="doc" id="insightAfter-${key}"></div>
       </div>
-      <div class="jira-modal-actions" style="margin-top:12px;">
-        <button class="primary" id="approveInsightBtn-${key}">Approve — remember this for future imports</button>
-        <button class="secondary" id="discardInsightBtn-${key}">Discard</button>
+      <div id="insightStatus-${key}" style="margin-top:12px;">
+        <div class="jira-confirm-summary">
+          <div><b>Suggested lesson:</b></div>
+          <div style="margin-top:6px;">${escapeHtml(insight)}</div>
+        </div>
+        <div class="jira-modal-actions" style="margin-top:12px;">
+          <button class="primary" id="approveInsightBtn-${key}">Approve — remember this for future imports</button>
+          <button class="secondary" id="discardInsightBtn-${key}">Discard</button>
+        </div>
       </div>
     `;
+    document.getElementById(`insightBefore-${key}`).appendChild(buildDocFragment(pushedMarkdown || ''));
+    document.getElementById(`insightAfter-${key}`).appendChild(buildDocFragment(currentMarkdown || ''));
     document.getElementById(`approveInsightBtn-${key}`).onclick = () => jiraImportApproveInsight(key, insight);
     document.getElementById(`discardInsightBtn-${key}`).onclick = () => {
       document.getElementById(`insightStatus-${key}`).innerHTML = '<span class="hint">Discarded.</span>';
     };
   }catch(err){
-    document.getElementById(`insightStatus-${key}`).innerHTML = statusBanner('err', '⚠', 'Could not generate a lesson', escapeHtml(err.message));
+    body.innerHTML = statusBanner('err', '⚠', 'Could not check for changes', escapeHtml(err.message));
   }
 }
 
