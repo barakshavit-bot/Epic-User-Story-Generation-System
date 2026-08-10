@@ -2540,18 +2540,33 @@ function jiraItemPickerHtml(items, selectedIndex){
   ).join('')}</div>`;
 }
 
+function jiraCreateItemChecklistHtml(items, selectedIndices){
+  return `<div class="jira-import-checklist">${items.map((it, i) => `
+    <label class="jira-import-row">
+      <input type="checkbox" data-i="${i}" ${selectedIndices.has(i) ? 'checked' : ''}>
+      <span class="jira-import-row-type">${it.type === 'epic' ? 'Epic' : 'Story'}</span>
+      <span class="jira-import-row-summary">${escapeHtml(it.title)}</span>
+    </label>
+  `).join('')}</div>`;
+}
+
 function openCreateInJiraModal(raw){
   const items = parseOutputIntoJiraItems(raw);
-  const state = { items, selectedItemIndex: 0, selectedProject: null, selectedEpic: null, confirming: false };
+  // Everything starts selected — uncheck anything you're not happy with before creating.
+  const state = { items, selectedIndices: new Set(items.map((_, i) => i)), selectedProject: null, selectedEpic: null, confirming: false, results: [] };
+
+  function selectedItems(){ return state.items.filter((_, i) => state.selectedIndices.has(i)); }
 
   function render(){
     if(state.confirming){ renderConfirm(); return; }
-    const item = state.items[state.selectedItemIndex];
-    const needsEpic = item.type === 'story';
+    const chosen = selectedItems();
+    const needsEpic = chosen.some(it => it.type === 'story');
     openJiraModal(`
       <h3>Create in Jira</h3>
-      <p class="jira-modal-sub">${state.items.length > 1 ? `Choose which item to create, then a project${needsEpic ? ' and epic' : ''}.` : `Creating: <b>${escapeHtml(item.title)}</b>`}</p>
-      ${state.items.length > 1 ? jiraItemPickerHtml(state.items, state.selectedItemIndex) : ''}
+      <p class="jira-modal-sub">${items.length > 1
+        ? `Choose which items to create — everything's selected by default, uncheck anything you're not happy with yet. Then pick a project${needsEpic ? ' and epic' : ''} for all of them.`
+        : `Creating: <b>${escapeHtml(items[0].title)}</b>`}</p>
+      ${items.length > 1 ? jiraCreateItemChecklistHtml(state.items, state.selectedIndices) : ''}
       <div class="field">
         <label class="jira-field-label">Project</label>
         ${state.selectedProject
@@ -2560,7 +2575,7 @@ function openCreateInJiraModal(raw){
       </div>
       ${needsEpic ? `
       <div class="field">
-        <label class="jira-field-label">Epic (optional)</label>
+        <label class="jira-field-label">Epic (optional, applies to every Story above)</label>
         ${state.selectedEpic
           ? `<div class="jira-selected-chip">${escapeHtml(state.selectedEpic.key)} — ${escapeHtml(state.selectedEpic.summary)}<button id="clearEpicBtn">&times;</button></div>`
           : state.selectedProject
@@ -2568,7 +2583,7 @@ function openCreateInJiraModal(raw){
             : `<div class="hint">Select a project first.</div>`}
       </div>` : ''}
       <div class="jira-modal-actions">
-        <button class="primary" id="confirmCreateBtn" ${!state.selectedProject ? 'disabled' : ''}>Review &amp; Create</button>
+        <button class="primary" id="confirmCreateBtn" ${(!state.selectedProject || !chosen.length) ? 'disabled' : ''}>Review &amp; Create${chosen.length > 1 ? ` (${chosen.length})` : ''}</button>
         <button class="secondary" id="cancelCreateBtn">Cancel</button>
       </div>
     `);
@@ -2576,22 +2591,22 @@ function openCreateInJiraModal(raw){
   }
 
   function renderConfirm(){
-    const item = state.items[state.selectedItemIndex];
-    const isEpic = item.type === 'epic';
+    const chosen = selectedItems();
+    const anyStory = chosen.some(it => it.type === 'story');
     openJiraModal(`
       <h3>Confirm: Create in Jira</h3>
       <p class="jira-modal-sub">Nothing happens in Jira until you confirm below.</p>
       <div class="jira-confirm-summary">
-        <div><b>Action:</b> Create a new <b>${isEpic ? 'Epic' : 'Story'}</b></div>
+        <div><b>Action:</b> Create ${chosen.length} item${chosen.length > 1 ? 's' : ''}</div>
         <div><b>Project:</b> ${escapeHtml(state.selectedProject.key)} — ${escapeHtml(state.selectedProject.name)}</div>
-        ${!isEpic && state.selectedEpic ? `<div><b>Linked under Epic:</b> ${escapeHtml(state.selectedEpic.key)} — ${escapeHtml(state.selectedEpic.summary)}</div>` : ''}
-        ${!isEpic && !state.selectedEpic ? `<div><b>Linked under Epic:</b> none</div>` : ''}
-        <div><b>Title:</b> ${escapeHtml(item.title)}</div>
-        <div class="hint" style="margin-top:10px;">Acceptance Criteria and Edge Cases go into a dedicated "Acceptance Criteria" field if this Jira site has one — everything else (Statement, Business Requirements, Technical Notes, etc.) goes into the Description. If that field doesn't exist or won't accept it, everything falls back into the Description automatically.</div>
+        ${anyStory ? `<div><b>Stories linked under Epic:</b> ${state.selectedEpic ? `${escapeHtml(state.selectedEpic.key)} — ${escapeHtml(state.selectedEpic.summary)}` : 'none'}</div>` : ''}
+        <div style="margin-top:8px;"><b>Items:</b></div>
+        ${chosen.map(it => `<div>• (${it.type === 'epic' ? 'Epic' : 'Story'}) ${escapeHtml(it.title)}</div>`).join('')}
+        <div class="hint" style="margin-top:10px;">Acceptance Criteria and Edge Cases go into a dedicated "Acceptance Criteria" field if this Jira site has one — everything else goes into the Description, with the same automatic fallback as always if that field isn't available.</div>
       </div>
       <div id="createStatus"></div>
       <div class="jira-modal-actions">
-        <button class="primary" id="confirmCreateFinalBtn">Yes, create it</button>
+        <button class="primary" id="confirmCreateFinalBtn">Yes, create ${chosen.length > 1 ? `all ${chosen.length}` : 'it'}</button>
         <button class="secondary" id="backCreateBtn">Go back</button>
       </div>
     `);
@@ -2604,33 +2619,54 @@ function openCreateInJiraModal(raw){
     const statusEl = document.getElementById('createStatus');
     btn.disabled = true;
     document.getElementById('backCreateBtn').style.display = 'none';
-    statusEl.innerHTML = statusBanner('warn', 'progress', 'Creating…', '');
-    try{
-      const item = state.items[state.selectedItemIndex];
-      const result = await callJiraProxy('createIssue', {
-        projectKey: state.selectedProject.key,
-        issueType: item.type === 'epic' ? 'Epic' : 'Story',
-        summary: item.title,
-        descriptionMarkdown: item.markdown,
-        epicKey: state.selectedEpic ? state.selectedEpic.key : undefined,
-      });
-      statusEl.innerHTML = statusBanner(result.warning ? 'warn' : 'ok', result.warning ? '⚠' : '✓', `Created ${result.key}`,
-        `<a href="${result.url}" target="_blank" rel="noopener">Open in Jira ↗</a>${result.warning ? `<br>${escapeHtml(result.warning)}` : ''}`);
-      btn.textContent = 'Done';
-      btn.disabled = false;
-      btn.onclick = closeJiraModal;
-    }catch(err){
-      statusEl.innerHTML = statusBanner('err', '⚠', 'Could not create issue', escapeHtml(err.message));
-      btn.disabled = false;
-      btn.textContent = 'Yes, create it';
-      btn.onclick = doCreate;
-      document.getElementById('backCreateBtn').style.display = '';
+    const chosen = selectedItems();
+    state.results = [];
+    let done = 0;
+    statusEl.innerHTML = statusBanner('warn', 'progress', `Creating 0/${chosen.length}…`, '');
+
+    await mapWithConcurrency(chosen, 3, async (item) => {
+      try{
+        const result = await callJiraProxy('createIssue', {
+          projectKey: state.selectedProject.key,
+          issueType: item.type === 'epic' ? 'Epic' : 'Story',
+          summary: item.title,
+          descriptionMarkdown: item.markdown,
+          epicKey: (item.type === 'story' && state.selectedEpic) ? state.selectedEpic.key : undefined,
+        });
+        state.results.push({ title: item.title, ok: true, key: result.key, url: result.url, warning: result.warning });
+      }catch(err){
+        state.results.push({ title: item.title, ok: false, error: err.message });
+      }
+      done++;
+      statusEl.innerHTML = statusBanner('warn', 'progress', `Creating ${done}/${chosen.length}…`, '');
+    });
+
+    const allOk = state.results.every(r => r.ok);
+    statusEl.innerHTML = `
+      <div class="jira-confirm-summary">
+        ${state.results.map(r => r.ok
+          ? `<div>✓ <b>${escapeHtml(r.key)}</b> — ${escapeHtml(r.title)} — <a href="${r.url}" target="_blank" rel="noopener">Open in Jira ↗</a>${r.warning ? `<br><span class="hint" style="display:inline;">${escapeHtml(r.warning)}</span>` : ''}</div>`
+          : `<div style="color:var(--danger);">✗ ${escapeHtml(r.title)} — ${escapeHtml(r.error)}</div>`
+        ).join('')}
+      </div>
+    `;
+    btn.textContent = 'Done';
+    btn.disabled = false;
+    btn.onclick = closeJiraModal;
+    if(!allOk){
+      // Leave a way back in case some failed and the person wants to retry with a corrected selection.
+      const backBtn = document.getElementById('backCreateBtn');
+      if(backBtn){ backBtn.style.display = ''; backBtn.textContent = 'Back to selection'; backBtn.onclick = () => { state.confirming = false; render(); }; }
     }
   }
 
   function wire(){
-    document.querySelectorAll('.jira-item-picker button').forEach(btn => {
-      btn.onclick = () => { state.selectedItemIndex = Number(btn.dataset.i); state.selectedEpic = null; render(); };
+    document.querySelectorAll('.jira-import-row input[type=checkbox]').forEach(cb => {
+      cb.onchange = () => {
+        const i = Number(cb.dataset.i);
+        if(cb.checked) state.selectedIndices.add(i); else state.selectedIndices.delete(i);
+        render();
+      };
     });
     document.getElementById('cancelCreateBtn').onclick = closeJiraModal;
 
