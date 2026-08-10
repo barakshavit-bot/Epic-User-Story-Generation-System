@@ -554,6 +554,34 @@
   }
   .word-upload-btn:hover{border-color:var(--navy-light);background:#F3F0FA;}
   .word-upload-status{font-size:11.5px;color:var(--slate);}
+  .jira-fetch-epic-btn{
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    font-weight:600;
+    border:1.5px solid var(--yellow);
+    background:#fff;
+    color:#8A5E06;
+    padding:5px 10px;
+    border-radius:6px;
+    cursor:pointer;
+  }
+  .jira-fetch-epic-btn:hover{background:#FFF6DE;}
+  .jira-fetch-epic-panel{
+    margin-top:8px;
+    padding:12px;
+    border:1px solid var(--line);
+    border-radius:8px;
+    background:#FDFCFF;
+  }
+  .jira-fetch-epic-panel input[type=text]{
+    width:100%;
+    border:1.5px solid var(--line);
+    border-radius:7px;
+    padding:8px 10px;
+    font-size:13px;
+    font-family:'Inter',sans-serif;
+  }
+  .jira-fetch-epic-status{margin-top:6px;}
   .dropzone{
     border:1.5px dashed var(--line);
     border-radius:12px;
@@ -1280,10 +1308,10 @@ function renderGeneratePanel(){
 
   if(cfg.needsEpic){
     if(cfg.splitEpicStories){
-      panel.appendChild(buildTextFieldWithWordUpload('epicText', 'epicWord', cfg.epicLabel, cfg.epicHint));
+      panel.appendChild(buildTextFieldWithWordUpload('epicText', 'epicWord', cfg.epicLabel, cfg.epicHint, true));
       panel.appendChild(buildTextFieldWithWordUpload('storiesText', 'storiesWord', cfg.storiesLabel, cfg.storiesHint));
     } else {
-      panel.appendChild(buildTextFieldWithWordUpload('epicText', 'epicWord', cfg.epicLabel || 'Epic text', cfg.epicHint));
+      panel.appendChild(buildTextFieldWithWordUpload('epicText', 'epicWord', cfg.epicLabel || 'Epic text', cfg.epicHint, true));
     }
   }
 
@@ -1337,9 +1365,10 @@ function renderGeneratePanel(){
   setupFlowDropzone();
   renderFlowThumbs();
   wireWordUploadWidgets();
+  wireJiraEpicFetchButtons();
 }
 
-function buildTextFieldWithWordUpload(textareaId, wordInputId, label, hint){
+function buildTextFieldWithWordUpload(textareaId, wordInputId, label, hint, allowJiraFetch){
   const field = document.createElement('div');
   field.className = 'field';
   field.innerHTML = `
@@ -1350,9 +1379,55 @@ function buildTextFieldWithWordUpload(textareaId, wordInputId, label, hint){
       <button type="button" class="word-upload-btn" data-input="${wordInputId}">Upload Word doc(s)</button>
       <input type="file" id="${wordInputId}" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple style="display:none">
       <span class="word-upload-status" id="${wordInputId}-status"></span>
+      ${allowJiraFetch ? `<button type="button" class="jira-fetch-epic-btn" id="${textareaId}-jira-btn">Get from Jira</button>` : ''}
     </div>
+    ${allowJiraFetch ? `<div class="jira-fetch-epic-panel" id="${textareaId}-jira-panel" style="display:none;"></div>` : ''}
   `;
+  if(allowJiraFetch) field.dataset.jiraFetchTarget = textareaId;
   return field;
+}
+
+function wireJiraEpicFetchButtons(){
+  document.querySelectorAll('.jira-fetch-epic-btn').forEach(btn => {
+    const textareaId = btn.id.replace(/-jira-btn$/, '');
+    btn.onclick = () => toggleJiraEpicFetchPanel(textareaId);
+  });
+}
+
+function toggleJiraEpicFetchPanel(textareaId){
+  const panel = document.getElementById(`${textareaId}-jira-panel`);
+  if(!panel) return;
+  const isOpen = panel.style.display !== 'none';
+  if(isOpen){ panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  if(panel.dataset.built) return;
+  panel.dataset.built = '1';
+  panel.innerHTML = `
+    <input type="text" class="jira-fetch-epic-input" placeholder="Search Jira for the Epic…">
+    <div class="jira-results"></div>
+    <div class="hint jira-fetch-epic-status"></div>
+  `;
+  const input = panel.querySelector('.jira-fetch-epic-input');
+  const results = panel.querySelector('.jira-results');
+  const statusEl = panel.querySelector('.jira-fetch-epic-status');
+  wireLiveSearch(input, results, async (q) => {
+    if(!q) return [];
+    const res = await callJiraProxy('searchIssues', { queryText: q, issueType: 'Epic' });
+    return res.issues.map(it => ({ key: it.key, label: it.summary }));
+  }, async (picked) => {
+    statusEl.textContent = `Fetching ${picked.key}…`;
+    try{
+      const pulled = await callJiraProxy('pullIssuesContent', { issueKeys: [picked.key] });
+      const found = pulled.issues.find(i => i.key === picked.key);
+      if(!found || found.error) throw new Error(found && found.error ? (found.error.errorMessages ? found.error.errorMessages.join(', ') : JSON.stringify(found.error)) : 'Could not fetch this Epic.');
+      const textarea = document.getElementById(textareaId);
+      if(textarea) textarea.value = found.pulledMarkdown || '';
+      statusEl.innerHTML = `<span style="color:var(--given);">Pulled ${escapeHtml(picked.key)} — ${escapeHtml(picked.label)}.</span>`;
+      panel.style.display = 'none';
+    }catch(err){
+      statusEl.innerHTML = `<span style="color:var(--danger);">${escapeHtml(err.message)}</span>`;
+    }
+  });
 }
 
 async function extractWordText(file){
