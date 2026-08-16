@@ -905,6 +905,7 @@
         <button data-view="feedback">Feedback</button>
         <button data-view="history">History</button>
         <button data-view="jira-import">Import from Jira</button>
+        <button data-view="paste-push">Paste &amp; Push</button>
         <button data-view="generate">Generate</button>
       </div>
       <div class="modes" id="modes" style="display:none;">
@@ -1040,12 +1041,13 @@ Based on the USER_INTENT, execute ONLY the corresponding instruction block below
 - If CURRENT_EPIC_TEXT contains multiple Stories, produce one Design Change Summary entry and one updated Story per Story affected; Stories with no relevant change can be skipped in both the summary and the output, but say so briefly at the end of the Design Change Summary section.
 
 ### Mode 5: [REFINE_EXISTING_STORY]
-- CURRENT_STORIES_TEXT contains exactly one existing Child Story (not an Epic). Optional extra guidance may request specific changes.
-- This content may have come directly from Jira rather than from this tool, and may not follow the Strict Child Story Schema at all — it could be a few plain paragraphs, a bullet list with no headings, or anything in between.
-- Reorganize it into the exact Strict Child Story Schema structure below, preserving every real piece of information from the source. Do not invent new requirements, acceptance criteria, or edge cases that aren't implied by the source content or the extra guidance.
+- CURRENT_STORIES_TEXT contains one or more existing Child Stories (not an Epic), possibly mixed together in a single blob with no clear separation between them. Optional extra guidance may request specific changes.
+- This content may have come directly from Jira, from a paste, or from elsewhere rather than from this tool, and may not follow the Strict Child Story Schema at all — it could be a few plain paragraphs, a bullet list with no headings, one clearly-delineated story, or several stories run together.
+- First, identify how many distinct stories are actually present in the source — do not split one story into pieces, and do not merge genuinely separate stories into one.
+- Reorganize each one into the exact Strict Child Story Schema structure below, preserving every real piece of information from the source. Do not invent new requirements, acceptance criteria, or edge cases that aren't implied by the source content or the extra guidance.
 - If a required section has no corresponding source content and no guidance fills the gap, still include that section's heading, with a single line such as "(not specified in the source)" rather than fabricating detail.
 - If extra guidance is present, apply it as real requested changes on top of the reorganized content — this is not just a reformatting pass in that case.
-- Output ONLY the one Child Story, following the Strict Child Story Schema exactly.
+- If there is exactly one story, output ONLY that one Child Story, following the Strict Child Story Schema exactly. If there is more than one, output each as its own "## Story N: Title" block in that same schema, in the order they appeared in the source.
 
 ---
 
@@ -1218,6 +1220,9 @@ function renderApp(){
   } else if(currentView === 'jira-import'){
     mainArea.innerHTML = '<div class="mock-page" id="jiraImportRoot"></div>';
     renderJiraImportStep();
+  } else if(currentView === 'paste-push'){
+    mainArea.innerHTML = '<div class="mock-page" id="pastePushRoot"></div>';
+    renderPastePushStep();
   } else {
     mainArea.innerHTML = generatePageTemplate();
     renderGeneratePanel();
@@ -3623,6 +3628,88 @@ async function jiraImportApproveInsight(key, insightText){
     if(statusEl) statusEl.innerHTML = '<span class="hint" style="color:var(--given);">Saved — this will help shape future generations, including outside this import wizard.</span>';
   }catch(err){
     if(statusEl) statusEl.innerHTML = statusBanner('err', '⚠', 'Could not save this lesson', escapeHtml(err.message));
+  }
+}
+
+// ============================================================================
+// Paste & Push — paste an Epic or Story/Stories from anywhere, organize it into
+// Epic Forge's structure without inventing content, then push to Jira. Reuses
+// the reshape modes built for Import from Jira and the bulk Create-in-Jira flow
+// already built for generated output — almost nothing new needed underneath.
+// ============================================================================
+
+let pastePushState = { itemType: 'epic', rawInput: '', reshaped: null, error: null };
+
+function renderPastePushStep(){
+  const root = document.getElementById('pastePushRoot');
+  if(!root) return;
+
+  if(pastePushState.reshaped){
+    root.innerHTML = `
+      <h2>Paste &amp; Push</h2>
+      <p class="mock-page-sub">Organized into Epic Forge's structure — the content itself is kept as-is, nothing invented. Review below, then push to Jira.</p>
+      <div class="doc" id="pastePushDoc"></div>
+      <div class="jira-modal-actions" style="margin-top:20px;">
+        <button class="primary" id="pastePushCreateBtn">Create in Jira</button>
+        <button class="secondary" id="pastePushStartOverBtn">Start over</button>
+      </div>
+    `;
+    document.getElementById('pastePushDoc').appendChild(buildDocFragment(pastePushState.reshaped));
+    document.getElementById('pastePushCreateBtn').onclick = () => openCreateInJiraModal(pastePushState.reshaped);
+    document.getElementById('pastePushStartOverBtn').onclick = () => {
+      pastePushState = { itemType: pastePushState.itemType, rawInput: '', reshaped: null, error: null };
+      renderPastePushStep();
+    };
+    return;
+  }
+
+  root.innerHTML = `
+    <h2>Paste &amp; Push</h2>
+    <p class="mock-page-sub">Paste an existing Epic or Story/Stories from anywhere — this organizes it into the same structure as everything else in this tool, keeping the content itself as-is, then lets you push it to Jira under a project (Epic) or under an Epic (Stories).</p>
+    <div class="jira-mode-toggle" id="pastePushTypeToggle">
+      <button type="button" data-type="epic" class="${pastePushState.itemType === 'epic' ? 'active' : ''}">Epic</button>
+      <button type="button" data-type="stories" class="${pastePushState.itemType === 'stories' ? 'active' : ''}">Story or Stories</button>
+    </div>
+    <div class="field">
+      <textarea id="pastePushInput" rows="14" placeholder="Paste the raw Epic or Story text here…">${escapeHtml(pastePushState.rawInput)}</textarea>
+    </div>
+    <div id="pastePushStatus">${pastePushState.error ? statusBanner('err', '⚠', 'Could not organize this content', escapeHtml(pastePushState.error)) : ''}</div>
+    <div class="jira-modal-actions">
+      <button class="primary" id="pastePushOrganizeBtn">Organize this</button>
+    </div>
+  `;
+  document.querySelectorAll('#pastePushTypeToggle button').forEach(btn => {
+    btn.onclick = () => { pastePushState.itemType = btn.dataset.type; renderPastePushStep(); };
+  });
+  document.getElementById('pastePushInput').addEventListener('input', (e) => { pastePushState.rawInput = e.target.value; });
+  document.getElementById('pastePushOrganizeBtn').onclick = doPastePushOrganize;
+}
+
+async function doPastePushOrganize(){
+  const text = (pastePushState.rawInput || '').trim();
+  const statusEl = document.getElementById('pastePushStatus');
+  if(!text){
+    statusEl.innerHTML = statusBanner('err', '⚠', 'Nothing to organize', 'Paste some text first.');
+    return;
+  }
+  const btn = document.getElementById('pastePushOrganizeBtn');
+  btn.disabled = true;
+  statusEl.innerHTML = statusBanner('warn', 'progress', 'Organizing…', '');
+  try{
+    const isEpic = pastePushState.itemType === 'epic';
+    const result = await callClaude({
+      intent: isEpic ? 'REFINE_EXISTING_EPIC' : 'REFINE_EXISTING_STORY',
+      epicText: isEpic ? text : '',
+      storiesText: isEpic ? '' : text,
+      extraNotes: '', images: [], codeFiles: [], flowImages: [],
+    });
+    pastePushState.reshaped = result.text;
+    pastePushState.error = null;
+    renderPastePushStep();
+  }catch(err){
+    pastePushState.error = err.message;
+    btn.disabled = false;
+    renderPastePushStep();
   }
 }
 
