@@ -1030,19 +1030,23 @@ Note on doc files inside a product export (e.g. README.md, AGENTS.md, EPICS.md, 
 Based on the USER_INTENT, execute ONLY the corresponding instruction block below:
 
 ### Mode 1: [CREATE_EPIC_FROM_SCRATCH]
-- Analyze PRODUCT_MOCK_DATA.
-- Identify all user flows, UI elements, functional logic, and hidden requirements shown in the mockups.
+- If "Additional guidance from the PM" is present in this request, that guidance is the primary and dominant definition of this Epic's scope — it says what feature or capability this Epic is actually about. Everything you generate must serve that stated scope.
+- Analyze PRODUCT_MOCK_DATA, but only the parts of it relevant to that stated scope. PRODUCT_MOCK_DATA may contain code or documentation for an entire application, spanning many features and domains — most of which have nothing to do with what was actually requested. Do not pull in functionality, fields, or requirements from an unrelated module just because it exists in the same mock; identify all user flows, UI elements, functional logic, and hidden requirements only within the requested feature area, not across the whole product.
+- If no guidance is given at all, analyze PRODUCT_MOCK_DATA as a whole, but still keep the resulting Epic to a single coherent feature or capability — do not sprawl across multiple unrelated parts of the product in one Epic.
+- If you are ever unsure whether something from the mock belongs in this Epic, leave it out — staying within the requested scope matters more than exhaustively covering everything the mock contains.
 - Generate a brand-new Epic following the Strict Epic Schema below.
 
 ### Mode 2: [REFINE_EXISTING_EPIC]
-- Compare CURRENT_EPIC_TEXT against PRODUCT_MOCK_DATA.
-- Identify gaps where the current text fails to cover the functionalities shown in the mockups.
-- Update and optimize the text to ensure 100% functional coverage.
-- Output the fully revised Epic following the Strict Epic Schema below, highlighting or seamlessly integrating the improvements.
+- CURRENT_EPIC_TEXT is the primary and dominant source of truth for this Epic. Base the revision mostly on what it already describes.
+- PRODUCT_MOCK_DATA (if provided) may contain code or documentation for an entire application, spanning many features and domains beyond this specific Epic. Use it only to identify genuine gaps — something this Epic clearly needs but doesn't yet describe — and only when that gap is unmistakably within the SAME feature/domain this Epic already covers. Do not pull in functionality, fields, or requirements belonging to a different part of the mock just because it exists there; an unrelated module in the same codebase is not part of this Epic's scope, even if it seems relevant at a glance.
+- If you are ever unsure whether something from the mock belongs in this Epic, leave it out — staying faithful to the Epic's actual scope matters more than exhaustively covering everything the mock contains.
+- Output the fully revised Epic following the Strict Epic Schema below, highlighting or seamlessly integrating any genuine improvements.
 - CURRENT_EPIC_TEXT may have come directly from Jira rather than from this tool, and may not follow the schema at all yet. If so, reorganize it into the exact schema structure, preserving every real piece of information — do not invent requirements, acceptance criteria, or edge cases beyond what the source content or extra guidance implies. If a required section has no corresponding source content, include its heading with "(not specified in the source)" rather than fabricating detail.
 
 ### Mode 3: [GENERATE_STORIES_ONLY]
-- Read CURRENT_EPIC_TEXT (and look at PRODUCT_MOCK_DATA if available for context).
+- CURRENT_EPIC_TEXT is the primary and dominant source of truth for what these Stories must cover. Base the Stories mostly on what the Epic itself describes — its Statement, Business Requirements, Technical Notes, Design Guidelines, Acceptance Criteria, and Edge Cases.
+- PRODUCT_MOCK_DATA (if provided) may contain code or documentation for an entire application, spanning many features and domains beyond this specific Epic. Only draw on it to fill a genuine gap — something the Epic clearly needs but doesn't explicitly spell out — and only when that gap is unmistakably within the SAME feature/domain the Epic describes. Do not pull in functionality, fields, or requirements from a different part of the mock just because it exists there; an unrelated module in the same codebase is not part of this Epic's scope, even if it seems relevant at a glance.
+- If you are ever unsure whether something from the mock belongs in these Stories, leave it out — staying faithful to the Epic's actual scope matters more than exhaustively covering everything the mock contains.
 - Break down the Epic into granular, development-ready Child Stories.
 - Do NOT alter or output the Epic itself. Output ONLY the Child Stories following the Strict Child Story Schema below.
 
