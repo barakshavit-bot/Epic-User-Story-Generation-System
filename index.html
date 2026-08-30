@@ -791,6 +791,93 @@
   .output-empty h3{margin:0;color:var(--ink);font-size:16px;}
   .output-empty p{margin:0;font-size:13.5px;max-width:340px;line-height:1.5;}
 
+  .gen-anim-wrap{
+    height:100%;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    padding:60px 20px;
+  }
+  .gen-anim-stage{width:150px;height:150px;position:relative;margin-bottom:22px;}
+  .gen-anim-text{
+    font-family:'JetBrains Mono',monospace;
+    font-size:13px;
+    font-weight:600;
+    color:var(--navy-light);
+    transition:opacity .2s ease;
+    text-align:center;
+  }
+
+  /* Variant 1: hammer & anvil, sparks flying */
+  .gen-anvil{
+    position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
+    width:76px;height:28px;background:var(--navy);border-radius:6px 6px 12px 12px;
+  }
+  .gen-anvil:before{
+    content:'';position:absolute;top:-9px;left:10px;width:56px;height:11px;
+    background:var(--navy);border-radius:4px;
+  }
+  .gen-hammer{
+    position:absolute;top:8px;left:50%;width:9px;height:64px;background:#8A5E06;
+    border-radius:3px;transform-origin:top center;
+    transform:translateX(-50%) rotate(-38deg);
+    animation:gen-hammer-swing 1.05s ease-in-out infinite;
+  }
+  .gen-hammer:before{
+    content:'';position:absolute;top:-3px;left:50%;transform:translateX(-50%);
+    width:30px;height:18px;background:var(--yellow);border-radius:5px;
+  }
+  @keyframes gen-hammer-swing{
+    0%{transform:translateX(-50%) rotate(-38deg);}
+    42%{transform:translateX(-50%) rotate(18deg);}
+    55%{transform:translateX(-50%) rotate(18deg);}
+    100%{transform:translateX(-50%) rotate(-38deg);}
+  }
+  .gen-spark{
+    position:absolute;bottom:40px;left:50%;width:5px;height:5px;border-radius:50%;
+    background:var(--yellow);opacity:0;
+    animation:gen-spark-fly 1.05s ease-out infinite;
+  }
+  @keyframes gen-spark-fly{
+    0%,38%{opacity:0;transform:translate(0,0) scale(1);}
+    46%{opacity:1;}
+    72%{opacity:0;transform:translate(var(--dx,20px),var(--dy,-24px)) scale(0.4);}
+    100%{opacity:0;}
+  }
+
+  /* Variant 2: interlocking gears */
+  .gen-gear{position:absolute;border-radius:50%;box-sizing:border-box;}
+  .gen-gear.g1{
+    width:78px;height:78px;top:8px;left:8px;
+    border:9px dashed var(--navy-light);
+    animation:gen-spin 3.2s linear infinite;
+  }
+  .gen-gear.g2{
+    width:54px;height:54px;bottom:10px;right:6px;
+    border:8px dashed var(--yellow);
+    animation:gen-spin-rev 2.1s linear infinite;
+  }
+  @keyframes gen-spin{from{transform:rotate(0);}to{transform:rotate(360deg);}}
+  @keyframes gen-spin-rev{from{transform:rotate(0);}to{transform:rotate(-360deg);}}
+
+  /* Variant 3: schema blocks assembling */
+  .gen-block{
+    position:absolute;left:16px;right:16px;height:16px;border-radius:4px;
+    background:var(--navy-light);opacity:0;
+    animation:gen-block-rise 2.6s ease infinite;
+  }
+  .gen-block:nth-child(1){bottom:8px;animation-delay:0s;}
+  .gen-block:nth-child(2){bottom:34px;animation-delay:.32s;background:var(--yellow);}
+  .gen-block:nth-child(3){bottom:60px;animation-delay:.64s;}
+  .gen-block:nth-child(4){bottom:86px;animation-delay:.96s;background:var(--yellow);}
+  @keyframes gen-block-rise{
+    0%{opacity:0;transform:translateY(14px) scaleX(.6);}
+    18%{opacity:1;transform:translateY(0) scaleX(1);}
+    82%{opacity:1;transform:translateY(0) scaleX(1);}
+    100%{opacity:0;transform:translateY(0) scaleX(1);}
+  }
+
   .output-toolbar{
     display:flex;
     justify-content:flex-end;
@@ -4125,6 +4212,71 @@ document.getElementById('modes').addEventListener('click', e => {
   renderGeneratePanel();
 });
 
+const GEN_ANIM_VARIANTS = [
+  {
+    className: 'gen-anim-hammer',
+    html: `
+      <div class="gen-anvil"></div>
+      <div class="gen-hammer"></div>
+      <div class="gen-spark" style="--dx:26px;--dy:-28px;animation-delay:0s;"></div>
+      <div class="gen-spark" style="--dx:-24px;--dy:-26px;animation-delay:.12s;"></div>
+      <div class="gen-spark" style="--dx:6px;--dy:-32px;animation-delay:.24s;"></div>
+    `,
+    messages: ['Hammering out the details…', 'Tempering the acceptance criteria…', 'Stoking the story furnace…', 'Forging edge cases in the fire…'],
+  },
+  {
+    className: 'gen-anim-gears',
+    html: `<div class="gen-gear g1"></div><div class="gen-gear g2"></div>`,
+    messages: ['Turning the requirements gears…', 'Meshing the business logic…', 'Cranking out user flows…', 'Grinding through the mock data…'],
+  },
+  {
+    className: 'gen-anim-blocks',
+    html: `<div class="gen-block"></div><div class="gen-block"></div><div class="gen-block"></div><div class="gen-block"></div>`,
+    messages: ['Stacking up the schema…', 'Assembling Given/When/Then…', 'Building the backlog, block by block…', 'Laying out the testing guidelines…'],
+  },
+];
+
+let genAnimMessageInterval = null;
+let genAnimPreviousHtml = null;
+
+function showGenAnimation(){
+  const panel = document.getElementById('outputPanel');
+  if(!panel) return;
+  genAnimPreviousHtml = panel.innerHTML;
+  const variant = GEN_ANIM_VARIANTS[Math.floor(Math.random() * GEN_ANIM_VARIANTS.length)];
+  panel.innerHTML = `
+    <div class="gen-anim-wrap">
+      <div class="gen-anim-stage ${variant.className}">${variant.html}</div>
+      <div class="gen-anim-text" id="genAnimText">${variant.messages[0]}</div>
+    </div>
+  `;
+  let msgIdx = 0;
+  clearInterval(genAnimMessageInterval);
+  genAnimMessageInterval = setInterval(() => {
+    const textEl = document.getElementById('genAnimText');
+    if(!textEl){ clearInterval(genAnimMessageInterval); return; }
+    msgIdx = (msgIdx + 1) % variant.messages.length;
+    textEl.style.opacity = '0';
+    setTimeout(() => {
+      const t = document.getElementById('genAnimText');
+      if(t){ t.textContent = variant.messages[msgIdx]; t.style.opacity = '1'; }
+    }, 220);
+  }, 2600);
+}
+
+function stopGenAnimation(){
+  clearInterval(genAnimMessageInterval);
+  genAnimMessageInterval = null;
+}
+
+// If generation fails, restore whatever the output panel showed before the attempt started
+// (the previous output, or the empty state) rather than leaving the animation frozen in place.
+function restoreGenAnimOnFailure(){
+  stopGenAnimation();
+  const panel = document.getElementById('outputPanel');
+  if(panel && genAnimPreviousHtml !== null) panel.innerHTML = genAnimPreviousHtml;
+}
+
 function setError(msg){
   const box = document.getElementById('errorBox');
   if(!box) return;
@@ -4139,6 +4291,7 @@ function setLoading(isLoading){
   btn.innerHTML = isLoading
     ? '<span class="spinner"><span></span><span></span><span></span></span><span>Generating&hellip;</span>'
     : '<span>Generate</span>';
+  if(isLoading) showGenAnimation();
 }
 
 async function handleGenerate(immediateFeedbackNote){
@@ -4214,6 +4367,7 @@ async function handleGenerate(immediateFeedbackNote){
   }catch(err){
     console.error(err);
     setError('Generation failed: ' + (err.message || 'unknown error') + '. Check your network settings if this persists.');
+    restoreGenAnimOnFailure();
   }finally{
     setLoading(false);
   }
@@ -4567,6 +4721,7 @@ async function copyRichText(raw, btn){
 }
 
 function renderOutput(raw, truncated){
+  stopGenAnimation();
   document.getElementById('emptyState')?.remove();
   const outputPanel = document.getElementById('outputPanel');
   outputPanel.innerHTML = '';
