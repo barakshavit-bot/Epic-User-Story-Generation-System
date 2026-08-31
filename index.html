@@ -1014,6 +1014,7 @@
         <button data-mode="REFINE_EXISTING_EPIC">Refine Epic</button>
         <button data-mode="GENERATE_STORIES_ONLY">Generate Stories</button>
         <button data-mode="RECONCILE_DESIGN_CHANGES">Design Update</button>
+        <button data-mode="REFINE_EXISTING_STORY">Refine Story</button>
       </div>
     </div>
   </header>
@@ -1102,7 +1103,7 @@ You are an expert Senior Product Manager and Technical Business Analyst. Your ro
 
 # Inputs Available
 Depending on the user's current step in the portal, you will receive a combination of:
-1. PRODUCT_MOCK_DATA - Visual assets (screenshot images) and/or a source-code export of the actual built product (React/TypeScript/JSX components, index.html, config). When source code is provided, treat it as ground truth for what the product actually does today: read component structure, conditional rendering, state, props, form fields, tabs/stages, modals, and any literal UI copy/labels in the JSX as the real functionality — more authoritative than any prose description of the product, since it is the real implementation. Some files may arrive not as raw source but as a "functionality inventory" — a structured summary produced by reading the entire file in full across sequential fragments, used when a single file is too large to include verbatim. Treat this with the same authority as raw source: it was derived from reading every part of the file, not from a truncated excerpt, so nothing was skipped to produce it.
+1. PRODUCT_MOCK_DATA - Visual assets (screenshot images) and/or a source-code export of the actual built product (React/TypeScript/JSX components, index.html, config). When source code is provided, treat it as ground truth for what the product actually does today: read component structure, conditional rendering, state, props, form fields, tabs/stages, modals, and any literal UI copy/labels in the JSX as the real functionality — more authoritative than any prose description of the product, since it is the real implementation. This does NOT apply to CURRENT_EPIC_TEXT, CURRENT_STORIES_TEXT, or any "Additional guidance from the PM" given for this specific request — those represent an explicit, deliberate decision about what this work should cover, which may legitimately diverge from what the code currently does (the code may be outdated, mid-migration, or the epic may intentionally specify new or changed behavior). If the mock's actual implementation contradicts something explicitly stated there, follow what's explicitly stated — do not quietly defer to what the code happens to do instead, and do not treat the contradiction as a gap to "correct." A brief, clearly-labeled note about a genuine discrepancy is fine if directly useful; overriding the stated definition is not. Some files may arrive not as raw source but as a "functionality inventory" — a structured summary produced by reading the entire file in full across sequential fragments, used when a single file is too large to include verbatim. Treat this with the same authority as raw source: it was derived from reading every part of the file, not from a truncated excerpt, so nothing was skipped to produce it.
 2. CURRENT_EPIC_TEXT - (Optional) An existing Epic provided by the user, for refinement or reconciliation against a design update.
 2b. CURRENT_STORIES_TEXT - (Optional) Existing Child Stories provided by the user, kept as a distinct input from CURRENT_EPIC_TEXT — used mainly by [RECONCILE_DESIGN_CHANGES], where either or both may be present.
 3. UPDATED DESIGN SCREENSHOTS - (Optional, used mainly by [RECONCILE_DESIGN_CHANGES]) Figma exports or PNGs showing the design as it stands after review/implementation changes — the authoritative source for what the UI/UX now looks like, to be diffed against CURRENT_EPIC_TEXT.
@@ -1301,6 +1302,12 @@ const modeConfig = {
     flowLabel: "Updated design screenshots",
     flowSub: "Figma exports or PNGs showing what changed during design review",
     flowHint: "Required for this mode — these are compared directly against the text above to find what needs to change.",
+  },
+  REFINE_EXISTING_STORY: {
+    needsMock: false, needsEpic: false, needsStoriesOnly: true,
+    mockHint: "Optional — only used for extra context while refining this Story.",
+    storiesLabel: "Story to refine",
+    storiesHint: "Paste the Story as written today, or pull it in from Jira below. It'll be reshaped into this tool's structure and refined using your guidance — content is preserved, nothing invented.",
   }
 };
 
@@ -1433,11 +1440,13 @@ function renderGeneratePanel(){
 
   if(cfg.needsEpic){
     if(cfg.splitEpicStories){
-      panel.appendChild(buildTextFieldWithWordUpload('epicText', 'epicWord', cfg.epicLabel, cfg.epicHint, true));
+      panel.appendChild(buildTextFieldWithWordUpload('epicText', 'epicWord', cfg.epicLabel, cfg.epicHint, true, 'Epic'));
       panel.appendChild(buildTextFieldWithWordUpload('storiesText', 'storiesWord', cfg.storiesLabel, cfg.storiesHint));
     } else {
-      panel.appendChild(buildTextFieldWithWordUpload('epicText', 'epicWord', cfg.epicLabel || 'Epic text', cfg.epicHint, true));
+      panel.appendChild(buildTextFieldWithWordUpload('epicText', 'epicWord', cfg.epicLabel || 'Epic text', cfg.epicHint, true, 'Epic'));
     }
+  } else if(cfg.needsStoriesOnly){
+    panel.appendChild(buildTextFieldWithWordUpload('storiesText', 'storiesWord', cfg.storiesLabel || 'Story text', cfg.storiesHint, true, 'Story'));
   }
 
   const flowField = document.createElement('div');
@@ -1493,7 +1502,7 @@ function renderGeneratePanel(){
   wireJiraEpicFetchButtons();
 }
 
-function buildTextFieldWithWordUpload(textareaId, wordInputId, label, hint, allowJiraFetch){
+function buildTextFieldWithWordUpload(textareaId, wordInputId, label, hint, allowJiraFetch, jiraIssueType){
   const field = document.createElement('div');
   field.className = 'field';
   field.innerHTML = `
@@ -1504,7 +1513,7 @@ function buildTextFieldWithWordUpload(textareaId, wordInputId, label, hint, allo
       <button type="button" class="word-upload-btn" data-input="${wordInputId}">Upload Word doc(s)</button>
       <input type="file" id="${wordInputId}" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple style="display:none">
       <span class="word-upload-status" id="${wordInputId}-status"></span>
-      ${allowJiraFetch ? `<button type="button" class="jira-fetch-epic-btn" id="${textareaId}-jira-btn">Get from Jira</button>` : ''}
+      ${allowJiraFetch ? `<button type="button" class="jira-fetch-epic-btn" id="${textareaId}-jira-btn" data-issue-type="${jiraIssueType || 'Epic'}">Get from Jira</button>` : ''}
     </div>
     ${allowJiraFetch ? `<div class="jira-fetch-epic-panel" id="${textareaId}-jira-panel" style="display:none;"></div>` : ''}
   `;
@@ -1515,11 +1524,11 @@ function buildTextFieldWithWordUpload(textareaId, wordInputId, label, hint, allo
 function wireJiraEpicFetchButtons(){
   document.querySelectorAll('.jira-fetch-epic-btn').forEach(btn => {
     const textareaId = btn.id.replace(/-jira-btn$/, '');
-    btn.onclick = () => toggleJiraEpicFetchPanel(textareaId);
+    btn.onclick = () => toggleJiraEpicFetchPanel(textareaId, btn.dataset.issueType || 'Epic');
   });
 }
 
-function toggleJiraEpicFetchPanel(textareaId){
+function toggleJiraEpicFetchPanel(textareaId, jiraIssueType){
   const panel = document.getElementById(`${textareaId}-jira-panel`);
   if(!panel) return;
   const isOpen = panel.style.display !== 'none';
@@ -1528,7 +1537,7 @@ function toggleJiraEpicFetchPanel(textareaId){
   if(panel.dataset.built) return;
   panel.dataset.built = '1';
   panel.innerHTML = `
-    <input type="text" class="jira-fetch-epic-input" placeholder="Search Jira for the Epic…">
+    <input type="text" class="jira-fetch-epic-input" placeholder="Search Jira for the ${escapeHtml(jiraIssueType)}…">
     <div class="jira-results"></div>
     <div class="hint jira-fetch-epic-status"></div>
   `;
@@ -1537,14 +1546,14 @@ function toggleJiraEpicFetchPanel(textareaId){
   const statusEl = panel.querySelector('.jira-fetch-epic-status');
   wireLiveSearch(input, results, async (q) => {
     if(!q) return [];
-    const res = await callJiraProxy('searchIssues', { queryText: q, issueType: 'Epic' });
+    const res = await callJiraProxy('searchIssues', { queryText: q, issueType: jiraIssueType });
     return res.issues.map(it => ({ key: it.key, label: it.summary }));
   }, async (picked) => {
     statusEl.textContent = `Fetching ${picked.key}…`;
     try{
       const pulled = await callJiraProxy('pullIssuesContent', { issueKeys: [picked.key] });
       const found = pulled.issues.find(i => i.key === picked.key);
-      if(!found || found.error) throw new Error(found && found.error ? (found.error.errorMessages ? found.error.errorMessages.join(', ') : JSON.stringify(found.error)) : 'Could not fetch this Epic.');
+      if(!found || found.error) throw new Error(found && found.error ? (found.error.errorMessages ? found.error.errorMessages.join(', ') : JSON.stringify(found.error)) : `Could not fetch this ${jiraIssueType}.`);
       const textarea = document.getElementById(textareaId);
       if(textarea) textarea.value = found.pulledMarkdown || '';
       statusEl.innerHTML = `<span style="color:var(--given);">Pulled ${escapeHtml(picked.key)} — ${escapeHtml(picked.label)}.</span>`;
@@ -4312,6 +4321,9 @@ async function handleGenerate(immediateFeedbackNote){
     }
   } else if(cfg.needsEpic && !epicText){
     setError('Add the Epic text before generating.');
+    return;
+  } else if(cfg.needsStoriesOnly && !storiesText){
+    setError('Add the Story text before generating (paste it, pull it in from Jira, or upload a Word doc).');
     return;
   }
   if(currentMode === 'CREATE_EPIC_FROM_SCRATCH' && !hasMock){
