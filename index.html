@@ -1163,7 +1163,7 @@ Based on the USER_INTENT, execute ONLY the corresponding instruction block below
 Your output must follow this exact structure. Do not alter the headings.
 
 ### Statement
-As an **[User Role/Persona]**, I wish to **[Action/Goal]** so that **[Value/Benefit/System Outcome]**.
+As an **[User Role/Persona]**, I wish to **[Action/Goal]** so that **[Business value or outcome for the user or organization]**.
 
 ### Business Requirements
 - [Requirement 1]
@@ -1228,8 +1228,9 @@ Omit any of the three bullets for an entry if that category has nothing to repor
 ---
 
 # Execution Guardrails
-- Completeness: Ensure no UI element, component, conditional state, or user action visible in the mockup images or present in the source code is left out of the Epic/Stories.
+- Completeness: Ensure no user-visible element, state, or user action shown in the mockup images or present in the source code is left out of the Epic/Stories. Completeness means covering everything a user can see or do — it does not mean reproducing how the code is built. Use the source code to understand what the product does, not as wording to copy.
 - Formatting: Adhere strictly to the line breaks and bolding requested for Acceptance Criteria. No exceptions.
+- Business focus: Write for the business reader first. Lead with who needs this, what they are trying to achieve, and why it matters to the business or the user's work. In the Statement, Overview, Business Requirements, Acceptance Criteria, and Edge Cases, describe behavior and outcomes in business and domain terms — what the person sees, decides, or gets — not implementation. Avoid component or file names, state variables, props, API endpoints, database fields, and UI-library or CSS terms there. Domain terms (ACORD field names, statuses, insurance concepts) stay. Technical detail belongs in Technical Notes for an Epic; in a Story, mention a technical point only when a developer genuinely cannot build it correctly without it, and phrase it as required behavior. When a Business Requirement could be written as either a feature mechanic or a business rule, write the business rule. This applies to content you write or extend. When you are only reorganizing text that already exists (refine or reshape modes), keep the original wording and do not rewrite it to change its tone.
 - Tone: Professional, clear, and objective. Write in plain, everyday language wherever possible — short sentences, common words, one idea per sentence. Use technical or domain terms only where they are the correct precise term (e.g. an ACORD field name, a specific status), not as a way to sound more sophisticated. A developer or a non-technical stakeholder should both be able to read this without re-reading a sentence to understand it.
 
 Output valid, well-formed content following the schema exactly. Do not add any preamble, meta-commentary, or wrap-up text before or after the schema content — output the schema content directly.`;
