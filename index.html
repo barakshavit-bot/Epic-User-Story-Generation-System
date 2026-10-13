@@ -1070,6 +1070,11 @@ window.storage = {
 
 // --- Auth gate: nothing below runs until signed in ---
 async function bootAfterAuth(){
+  try{
+    const { data } = await supabaseClient.auth.getSession();
+    const meta = (data && data.session && data.session.user && data.session.user.app_metadata) || {};
+    userRole = meta.role === 'owner' ? 'owner' : 'member';
+  }catch(e){ userRole = 'member'; }
   document.getElementById('authOverlay').style.display = 'none';
   const mainWrap = document.getElementById('mainAppWrap');
   mainWrap.style.visibility = 'visible';
@@ -1311,6 +1316,12 @@ const modeConfig = {
     storiesHint: "Paste the Story as written today, or pull it in from Jira below. It'll be reshaped into this tool's structure and refined using your guidance — content is preserved, nothing invented.",
   }
 };
+
+// 'owner' = can shape the tool's learning (feedback, pins, lessons, provider). Anyone else is a
+// 'member': can generate and push normally, but nothing they do feeds future generations.
+// Read from the signed-in user's app_metadata — the user can't edit that themselves.
+let userRole = 'member';
+function isOwner(){ return userRole === 'owner'; }
 
 let currentView = "mock"; // "mock" | "generate" — set for real after loadSavedMock() runs
 
@@ -1830,6 +1841,20 @@ function trimFeedbackLog(){
 const MAX_FEEDBACK_IN_PROMPT = 15;
 
 async function loadFeedbackLog(){
+  if(!isOwner()){
+    // Read-only copy of the owner's lessons and pinned rules, so generations benefit from them.
+    // Allowed by a select-only policy on that one key; nothing here is ever written back.
+    try{
+      const { data: me } = await supabaseClient.auth.getUser();
+      const myId = me && me.user ? me.user.id : null;
+      let q = supabaseClient.from('app_storage').select('value').eq('key', 'epic-forge-feedback-log');
+      if(myId) q = q.neq('user_id', myId);
+      const { data } = await q.maybeSingle();
+      feedbackLog = data && data.value ? (JSON.parse(data.value) || []) : [];
+    }catch(e){ feedbackLog = []; }
+    feedbackLoadOk = true;
+    return;
+  }
   const res = await safeLoadKey('epic-forge-feedback-log');
   if(!res.ok){
     feedbackLoadOk = false;
@@ -1840,6 +1865,7 @@ async function loadFeedbackLog(){
 }
 
 async function saveFeedbackLog(force){
+  if(!isOwner()) return; // members never write learning data, whatever the UI does
   if(!feedbackLoadOk && !force){
     console.warn('Skipping feedback save — initial load could not be verified, refusing to risk overwriting existing data.');
     return;
@@ -2272,7 +2298,7 @@ function historyPageTemplate(){
             <a href="${p.url}" target="_blank" rel="noopener">Open in Jira ↗</a>
             <span class="hint">pushed ${relativeTimeSince(p.pushedAt)}</span>
             <span class="hint">${p.lastCheckedAt ? `checked ${relativeTimeSince(p.lastCheckedAt)}` : 'never checked'}</span>
-            <button type="button" class="history-check-jira-btn" data-entry-id="${entry.id}" data-push-idx="${pIdx}">Check for updates &amp; learn</button>
+            ${isOwner() ? `<button type="button" class="history-check-jira-btn" data-entry-id="${entry.id}" data-push-idx="${pIdx}">Check for updates &amp; learn</button>` : ''}
           </div>
           <div class="jira-import-detail" id="history-insight-${entry.id}-${pIdx}" style="display:none;"></div>
         `).join('')}
@@ -3712,7 +3738,7 @@ async function jiraImportDoPush(){
 
 function renderJiraImportDone(){
   const root = document.getElementById('jiraImportRoot');
-  const pushedAndRefinedItems = jiraImportState.items.filter(item =>
+  const pushedAndRefinedItems = !isOwner() ? [] : jiraImportState.items.filter(item =>
     item.wasRefined && jiraImportState.pushResults.some(r => r.key === item.key && r.ok)
   );
   root.innerHTML = `
@@ -4428,7 +4454,7 @@ async function callClaude({ intent, epicText, storiesText, extraNotes, images, c
     userText += `Additional guidance from the PM: ${extraNotes}\n\n`;
   }
   if(immediateFeedbackNote){
-    userText += `The PM just reviewed the immediately preceding output from this exact tool and left this specific note — apply it to this revision, and only to this revision, ahead of any general historical feedback below: "${immediateFeedbackNote}"\n\n`;
+    userText += `The PM just reviewed the immediately preceding output from this exact tool and left this specific feedback (it may be several notes given in sequence, all about this same piece of work) — apply all of it to this revision, and only to this piece of work, ahead of any general historical feedback below: "${immediateFeedbackNote}"\n\n`;
   }
   userText += `Proceed strictly according to the operational mode for this USER_INTENT and output only the schema content.`;
 
@@ -4778,6 +4804,31 @@ function renderOutput(raw, truncated){
   currentRating = null;
   const feedbackBox = document.createElement('div');
   feedbackBox.className = 'feedback-box';
+
+  if(!isOwner()){
+    // Members can steer THIS generation only: the note is applied to one regeneration and
+    // is never saved, rated, pinned, or used for any later generation.
+    feedbackBox.innerHTML = `
+      <label>Refine this output</label>
+      <textarea id="feedbackNote" rows="3" placeholder="What would you change in this version? e.g. &quot;make the acceptance criteria shorter&quot;"></textarea>
+      <div class="feedback-actions">
+        <button type="button" id="regenerateBtn">Regenerate with this note</button>
+      </div>
+      <div class="hint" id="feedbackSavedNotice">Your notes stay with this piece of work — each regeneration keeps the earlier ones. They aren't saved as general lessons or used for other Epics or Stories.</div>
+    `;
+    outputPanel.appendChild(feedbackBox);
+    document.getElementById('regenerateBtn').onclick = async () => {
+      const note = document.getElementById('feedbackNote').value.trim();
+      const notice = document.getElementById('feedbackSavedNotice');
+      if(!note){ notice.style.color = 'var(--danger)'; notice.textContent = 'Write what you would change first.'; return; }
+      // Carry forward the notes already given on this same piece of work (the current version
+      // chain). A fresh chain — Start fresh, a different mode, a reopened entry — starts clean.
+      const current = currentHistoryEntryId ? historyLog.find(h => h.id === currentHistoryEntryId) : null;
+      const earlier = current && current.input && current.input.appliedFeedback ? current.input.appliedFeedback : '';
+      await handleGenerate(earlier ? `${earlier} | ${note}` : note);
+    };
+    return;
+  }
   feedbackBox.innerHTML = `
     <label>Rate &amp; improve this output</label>
     <div class="feedback-rating">
@@ -4991,6 +5042,8 @@ function buildDocFragment(raw){
 
 async function appMain(){
   await Promise.all([loadSavedMock(), loadFeedbackLog(), loadHistory(), loadLLMProvider()]);
+  const fbTab = document.querySelector('#viewTabs button[data-view=feedback]');
+  if(fbTab) fbTab.style.display = isOwner() ? '' : 'none';
   currentView = (uploadedImages.length > 0 || uploadedCodeFiles.length > 0) ? 'generate' : 'mock';
   renderApp();
 }
